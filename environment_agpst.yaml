@@ -1,0 +1,69 @@
+name: agpst
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # Python
+  - python=3.8
+
+  # PyTorch with CUDA support (adjust CUDA version as needed)
+  # For CUDA 11.7
+  - pytorch>=1.13.0
+  - torchvision>=0.14.0
+  - torchaudio
+  - pytorch-cuda=11.7
+
+  # For CUDA 11.8, use:
+  # - pytorch-cuda=11.8
+
+  # For CPU only, use:
+  # - cpuonly
+
+  # Core scientific computing
+  - numpy>=1.21.0,<1.24.0
+  - scipy>=1.7.3
+  - pandas>=1.3.0
+  - scikit-learn>=1.0.2
+
+  # Visualization
+  - matplotlib>=3.5.0
+  - seaborn>=0.11.0
+
+  # Configuration
+  - pyyaml>=6.0
+
+  # Utilities
+  - tqdm>=4.62.0
+
+  # Development tools (optional, uncomment if needed)
+  # - jupyter
+  # - ipykernel
+  # - pytest>=7.0.0
+
+  # Pip dependencies
+  - pip
+  - pip:
+      # Deep learning frameworks
+      - easy_torch==1.2.12
+      - timm>=0.6.11
+
+      # Model components
+      - positional-encodings>=6.0.1
+      - torch-summary>=1.4.5
+
+      # Configuration & utilities
+      - easydict>=1.10
+      - setproctitle>=1.3.2
+      - sympy>=1.10.1
+
+      # Experiment tracking
+      - swanlab>=0.3.0
+
+      # Development tools (optional)
+      # - pytest>=7.0.0
+      # - black>=22.0.0
+      # - flake8>=4.0.0
+      # - mypy>=0.950

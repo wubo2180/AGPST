@@ -1,0 +1,99 @@
+# ============ general ============ #
+GENERAL:
+    DESCRIPTION: 'STGCN model configuration'
+    MODEL_NAME: 'STGCN'
+    DATASET_NAME : "PEMS-BAY"
+    DATASET_TYPE : "Traffic speed"
+    DATASET_INPUT_LEN : 12
+    DATASET_OUTPUT_LEN : 12
+    GPU_NUM : 1
+    DEVICE: ''
+    DATASET_DIR: 'datasets/PEMS-BAY/data_in12_out12.pkl'
+    DATASET_INDEX_DIR: 'datasets/PEMS-BAY/index_in12_out12.pkl'
+    SCALER_DIR: 'datasets/PEMS-BAY/scaler_in12_out12.pkl'
+    ADJ_DIR: "datasets/PEMS-BAY/adj_mx.pkl"
+    MODEL_SAVE_PATH: 'checkpoints/METR-LA/'
+# ============ optim ============ #
+# PEMS-BAY METR-LA PEMS04 PEMS08 PEMS03
+OPTIM:
+    LR: 0.002
+    MOMENTUM: 0.9
+    ADAPT_LR: 0.01
+    META_LR: 0.001
+METRICS: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
+
+# ============ META  ============ #
+META:
+    SUPPORT_SET_SIZE: 100
+    QUERY_SET_SIZE: 100
+    NUM_SAMPLED_EDGES: 1000
+    UPDATE_SAPCE_STEP: 1
+# # ============ environment ============ #
+# ENV:
+#     ENV : EasyDict()
+#     ENV.SEED : 1
+#     ENV.CUDNN : EasyDict()
+#     ENV.CUDNN.ENABLED : True
+# ============ model ============ #
+MODEL:
+    STGCN:
+        Ks: 3
+        Kt: 3
+        blocks: [[3], [64, 16, 64], [64, 16, 64], [128, 128], [12]]
+        T: 12
+        n_vertex: 207
+        act_func: 'glu'
+        graph_conv_type: 'cheb_graph_conv'
+        gso: ''
+        bias: True
+        droprate: 0.5
+    FROWARD_FEATURES: [0]
+    TARGET_FEATURES: [0]
+# ============ train ============ #
+TRAIN:
+    CLIP_GRAD_PARAM:
+        max_norm: 5.0
+    NUM_EPOCHS: 100
+  
+    EPOCHS: 100
+    NULL_VAL : 0.0
+# read data
+    DATA_DIR : "datasets/METR-LA"
+# dataloader args, optional
+    DATA_BATCH_SIZE : 32
+    DATA_PREFETCH : False
+    DATA_SHUFFLE : True
+    DATA_NUM_WORKERS : 2
+    DATA_PIN_MEMORY : False
+
+# ============ validate ============ #
+VAL:
+    INTERVAL : 1
+# validating data
+    DATA : EasyDict()
+# read data
+    DATA_DIR : "datasets/PEMS-BAY"
+# dataloader args, optional
+    DATA_BATCH_SIZE : 32
+    DATA_PREFETCH : False
+    DATA_SHUFFLE : False
+    DATA_NUM_WORKERS : 2
+    DATA_PIN_MEMORY : False
+
+# ============ test ============ #
+TEST:
+    
+    INTERVAL : 1
+# test data
+    
+# read data
+    DATA_DIR : "datasets/PEMS-BAY"
+# dataloader args, optional
+    DATA_BATCH_SIZE : 32
+    DATA_PREFETCH : False
+    DATA_SHUFFLE : False
+    DATA_NUM_WORKERS : 2
+    DATA_PIN_MEMORY : False
+    EVALUATION_HORIZONS : 12
+
+
