@@ -38,7 +38,7 @@ def val(val_data_loader, model, config, scaler, epoch):
     prediction = []
     real_value = []
     with torch.no_grad():
-        for data in tqdm(val_data_loader):
+        for idx, data in enumerate(tqdm(val_data_loader)):
             future_data, history_data, long_history_data = data
             batch_size = future_data.shape[0]
             long_history_data = select_input_features(long_history_data, config['froward_features'])
@@ -53,6 +53,11 @@ def val(val_data_loader, model, config, scaler, epoch):
 
             prediction.append(preds.detach().cpu())        # preds = forward_return[0]
             real_value.append(labels.detach().cpu())        # testy = forward_return[1]
+            
+            # 测试模式：只处理一个batch
+            if config.get('test_mode', False):
+                print(f"Val test mode: Only processing batch {idx+1}")
+                break
 
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
@@ -89,7 +94,7 @@ def test(test_data_loader, model, config, scaler, epoch):
     prediction = []
     real_value = []
     with torch.no_grad():
-        for data in tqdm(test_data_loader):
+        for idx, data in enumerate(tqdm(test_data_loader)):
             future_data, history_data, long_history_data = data
             batch_size = future_data.shape[0]
             long_history_data = select_input_features(long_history_data, config['froward_features'])
@@ -104,6 +109,11 @@ def test(test_data_loader, model, config, scaler, epoch):
             
             prediction.append(preds.detach().cpu())        # preds = forward_return[0]
             real_value.append(labels.detach().cpu())        # testy = forward_return[1]s
+            
+            # 测试模式：只处理一个batch
+            if config.get('test_mode', False):
+                print(f"Test mode: Only processing batch {idx+1}")
+                break
 
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
@@ -166,7 +176,7 @@ def finetune(config, args):
 
             future_data, history_data, long_history_data = data
             batch_size = future_data.shape[0]
-
+            print("long_history_data", long_history_data.shape)
             long_history_data = select_input_features(long_history_data, config['froward_features'])
             history_data = select_input_features(history_data, config['target_features'])
             future_data = select_input_features(future_data, config['target_features'])
@@ -180,13 +190,30 @@ def finetune(config, args):
             prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
             real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
             
-            
+            # 主损失
             loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
+            
+            # 添加对比学习损失（如果存在）
+            if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
+                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                if isinstance(model.contrastive_loss, torch.Tensor):
+                    loss = loss + contrastive_weight * model.contrastive_loss
+            
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             
-        swanlab.log({"finetune/train_loss": loss.item()}, step=epoch)
+            # 测试模式：只处理一个batch
+            if config.get('test_mode', False):
+                print(f"Test mode: Only processing batch {idx+1}")
+                break
+            
+        # 记录损失
+        log_dict = {"finetune/train_loss": loss.item()}
+        if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
+            if isinstance(model.contrastive_loss, torch.Tensor):
+                log_dict["finetune/contrastive_loss"] = model.contrastive_loss.item()
+        swanlab.log(log_dict, step=epoch)
         
         print('============ val and test ============')
         # val(val_data_loader, model, config, scaler, epoch)
@@ -226,6 +253,11 @@ def preTrain_test(data_loader, model, scaler, mode='val'):
             MAE += metric_1
             RMSE += metric_2
             MAPE += metric_3
+            
+            # 测试模式：只处理一个batch
+            if config.get('test_mode', False):
+                print(f"Test mode: Only processing batch {idx+1}")
+                break
         MAE = MAE / (idx + 1)
         RMSE = RMSE / (idx + 1)
         MAPE = MAPE / (idx + 1)
@@ -254,17 +286,17 @@ def pretrain(config, args):
                            config['mask_ratio'], config['encoder_depth'],
                            config['decoder_depth'])
     device_ids = list(range(torch.cuda.device_count()))
-    if device_ids:
-        model = DataParallel(model, device_ids=device_ids).to(device_ids[0]) 
-    else:
-        model = model.to(config['device'])
+    # if device_ids:
+    #     model = DataParallel(model, device_ids=device_ids).to(device_ids[0]) 
+    # else:
+    model = model.to(config['device'])
     
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
     if args.lossType == 'mae':
         lossType = masked_mae
     elif args.lossType == 'sce':
         lossType = sce_loss
-        
+    print("config['pretrain_epochs']:",config['pretrain_epochs'])
     for epoch in range(config['pretrain_epochs']):
         print('============ epoch {:d} ============'.format(epoch))
         loss_all = 0.0
@@ -272,27 +304,55 @@ def pretrain(config, args):
         for idx, data in enumerate(tqdm(train_data_loader)):
 
             future_data, history_data = data
-
+            
             history_data = select_input_features(history_data, config['froward_features'])
             history_data = history_data.to(config['device'])
             
-            reconstruction_masked_tokens, label_masked_tokens = model(history_data, epoch)
+            # 获取模型输出
+            model_output = model(history_data, epoch)
+            
+            # 处理返回值（可能是2个或3个值）
+            if len(model_output) == 3:
+                reconstruction_masked_tokens, label_masked_tokens, contrastive_loss = model_output
+            else:
+                reconstruction_masked_tokens, label_masked_tokens = model_output
+                contrastive_loss = None
 
+            # 主损失（重构损失）
             loss = metric_forward(lossType, [reconstruction_masked_tokens, label_masked_tokens])
+            
+            # 添加对比学习损失（如果存在）
+            total_loss = loss
+            if contrastive_loss is not None:
+                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                if isinstance(contrastive_loss, torch.Tensor):
+                    total_loss = loss + contrastive_weight * contrastive_loss
+            
             optimizer.zero_grad()
-            loss.backward()
+            total_loss.backward()
             optimizer.step()
-            loss_all += loss.item()
+            loss_all += total_loss.item()
+            
+            # 测试模式：只处理一个batch
+            if config.get('test_mode', False):
+                print(f"Test mode: Only processing batch {idx+1}")
+                break
         
         loss_all = loss_all / (idx + 1)
         print("preTrain loss: ", loss_all)
         
-        swanlab.log({"pretrain/loss": loss_all}, step=epoch)
+        # 记录预训练损失
+        log_dict = {"pretrain/loss": loss_all}
+        # 如果有对比学习损失，也记录下来（使用最后一个batch的值作为示例）
+        if contrastive_loss is not None and isinstance(contrastive_loss, torch.Tensor):
+            log_dict["pretrain/contrastive_loss"] = contrastive_loss.item()
+        swanlab.log(log_dict, step=epoch)
         
         if config["save_model"]:
             print("Saving Model ...")
             pre_trained_path = config["model_save_path"] + "checkpoint_" + str(epoch) + ".pt"
-            torch.save(model.module.state_dict(), pre_trained_path)
+            state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
+            torch.save(state_dict, pre_trained_path)
         config['pre_trained_path'] = pre_trained_path
         # finetune(config, args)
 
@@ -320,13 +380,14 @@ def main(config, args):
             "adaptive": config['adaptive'],
         }
     )
-    
-    if args.preTrain == 'true':
+
+    if args.mode == 'pretrain':
         model = pretrain(config, args)
         model = model.cpu()
-    else:
+    elif args.mode == 'finetune':
         finetune(config, args)
-    
+    else:
+        print("mode error")
     swanlab.finish()
 
 
@@ -357,12 +418,12 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/PEMS03_v1.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--config', default='./parameters/PEMS03_v2.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default=0, type=int, help='device')
-    parser.add_argument('--preTrain', default='true', type=str, help='pre-training or not')
+    parser.add_argument('--mode', default='pretrain', type=str, help='pretrain / finetune')
     parser.add_argument('--lossType', default='mae', type=str, help='pre-training loss type and default is mae. {mae, sce}')
     parser.add_argument('--preTrain_batch_size', default=8, type=int, help='pre-training batch size')
-    parser.add_argument('--batch_size', default=32, type=int, help='fine-tuning batch size')
+    parser.add_argument('--batch_size', default=1, type=int, help='fine-tuning batch size')
     
     parser.add_argument('--pretrain_epochs', default=100, type=int, help='pre-training epochs')
     parser.add_argument('--finetune_epochs', default=100, type=int, help='fine-tuning epochs')

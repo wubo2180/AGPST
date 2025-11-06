@@ -3,7 +3,6 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from .mask import Mask
 from basicts.data import SCALER_REGISTRY
 from easytorch.utils.dist import master_only
 from timm.models.vision_transformer import trunc_normal_
@@ -12,7 +11,6 @@ from .maskgenerator import MaskGenerator
 from .positional_encoding import PositionalEncoding
 from .transformer_layers import TransformerLayers
 from ..graphwavenet import GraphWaveNet
-from .GIN import GIN_layer
 from .post_patch_adaptive_graph import PostPatchDynamicGraphConv
 
 
@@ -87,7 +85,14 @@ class pretrain_model(nn.Module):
             patches = self.patch_embedding(long_term_history)  # 输出: (B, N, P, d)
             
             # Step 2: 🎯 动态图学习 (直接兼容 (B, N, P, D) 格式)
-            patches, learned_adj = self.dynamic_graph_conv(patches)
+            graph_output = self.dynamic_graph_conv(patches)
+            if len(graph_output) == 3:
+                patches, learned_adj, contrastive_loss = graph_output
+                # 临时存储对比学习损失用于返回
+                self.contrastive_loss = contrastive_loss
+            else:
+                patches, learned_adj = graph_output
+                self.contrastive_loss = None
             
             
             # Step 5: 位置编码 (保持原有逻辑)
@@ -114,7 +119,14 @@ class pretrain_model(nn.Module):
             patches = self.patch_embedding(long_term_history)  # (B, N, P, d)
 
             # 🎯 动态图学习 (直接兼容 (B, N, P, D) 格式)
-            patches, learned_adj = self.dynamic_graph_conv(patches)
+            graph_output = self.dynamic_graph_conv(patches)
+            if len(graph_output) == 3:
+                patches, learned_adj, contrastive_loss = graph_output
+                # 临时存储对比学习损失用于返回
+                self.contrastive_loss = contrastive_loss
+            else:
+                patches, learned_adj = graph_output
+                self.contrastive_loss = None
 
             
             # 位置编码
@@ -176,8 +188,6 @@ class pretrain_model(nn.Module):
         return reconstruction_masked_tokens, label_masked_tokens
         
     def forward(self, history_data: torch.Tensor, epoch):
-
-        
         if self.mode == "pre-train":
             hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data, epoch)
             reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
@@ -188,10 +198,13 @@ class pretrain_model(nn.Module):
                     reconstruction_full, history_data.permute(0, 2, 3, 1), 
                     unmasked_token_index, masked_token_index
                 )
-                return reconstruction_masked_tokens, label_masked_tokens
+                # 返回重建结果和对比学习损失
+                contrastive_loss = getattr(self, 'contrastive_loss', None)
+                return reconstruction_masked_tokens, label_masked_tokens, contrastive_loss
             else:
                 # 如果没有mask，返回完整重建
-                return reconstruction_full, history_data.permute(0, 2, 3, 1)
+                contrastive_loss = getattr(self, 'contrastive_loss', None)
+                return reconstruction_full, history_data.permute(0, 2, 3, 1), contrastive_loss
         else:
             hidden_states_full, _, _ = self.encoding(history_data, epoch, mask=False)
             return hidden_states_full
@@ -216,41 +229,7 @@ class finetune_model(nn.Module):
         # checkpoint_dict = torch.load(self.pre_trained_path)
         state_dict = torch.load(self.pre_trained_path, map_location='cpu')  # or 'cuda:0'
         self.pretrain_model.load_state_dict(state_dict)
-        
-        # model_dict = self.pretrain_model.state_dict()
-        
-        # filtered_checkpoint = {}
-        # incompatible_keys = []
-        
-        # for k, v in checkpoint_dict.items():
-        #     if k.startswith('positional_encoding.tp_enc_2d'):
-        #         continue
-            
-        #     if k in model_dict:
-        #         if v.shape == model_dict[k].shape:
-        #             filtered_checkpoint[k] = v
-        #         else:
-        #             incompatible_keys.append(f"{k}: checkpoint {v.shape} vs model {model_dict[k].shape}")
-        #     else:
-        #         incompatible_keys.append(f"{k}: not found in current model")
-        
-        # if incompatible_keys:
-        #     print("Warning: Incompatible keys found (will use random initialization for these):")
-        #     for key in incompatible_keys[:10]:
-        #         print(f"  - {key}")
-        #     if len(incompatible_keys) > 10:
-        #         print(f"  ... and {len(incompatible_keys) - 10} more")
-        
-        # missing_keys = set(model_dict.keys()) - set(filtered_checkpoint.keys())
-        # if missing_keys:
-        #     print(f"Warning: {len(missing_keys)} keys will use random initialization")
-        #     print("Missing keys (first 10):", list(missing_keys)[:10])
-        
-        # self.pretrain_model.load_state_dict(filtered_checkpoint, strict=False)
-        # print(f"Successfully loaded {len(filtered_checkpoint)}/{len(model_dict)} parameters from checkpoint")
-        
-        # for param in self.pretrain_model.parameters():
-        #     param.requires_grad = False
+        print("Pre-trained model loaded successfully")
 
     def forward(self, history_data: torch.Tensor, long_history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, **kwargs) -> torch.Tensor:
         """Feed forward of STDMAE.
@@ -265,9 +244,12 @@ class finetune_model(nn.Module):
         short_term_history = history_data
         batch_size, _, num_nodes, _ = history_data.shape
         hidden_states = self.pretrain_model(long_history_data, epoch)
-        
+        print("hidden_states shape:", hidden_states.shape)
         out_len = 1
         hidden_states = hidden_states[:, :, -out_len, :]
         y_hat = self.backend(short_term_history, hidden_states=hidden_states).transpose(1, 2).unsqueeze(-1)
 
+        # 传递对比学习损失给调用者
+        self.contrastive_loss = getattr(self.pretrain_model, 'contrastive_loss', None)
+        
         return y_hat

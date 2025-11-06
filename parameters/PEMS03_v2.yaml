@@ -1,16 +1,16 @@
-# ============ Multi-scale Patch Embedding Configuration ============ #
+# ============ CPU Test Configuration ============ #
 
-description: 'STGCN model with multi-scale patch embedding'
+description: 'STGCN model test configuration for CPU'
 model_name: 'STGCN'
 dataset_name : "METR-LA"
 dataset_type : "Traffic speed"
 dataset_input_len : 12
 dataset_output_len : 12
 seq_len: 864
-gpu_num : 1
-device: ''
+gpu_num : 0
+device: 
 
-pre_trained_path: 'checkpoints/PEMS03/checkpoint_20.pt'
+pre_trained_path: 'checkpoints/PEMS03/checkpoint_0.pt'
 preTrain_dataset_dir: 'datasets/PEMS03/data_in864_out12.pkl'
 preTrain_dataset_index_dir: 'datasets/PEMS03/index_in864_out12.pkl'
 preTrain_scaler_dir: 'datasets/PEMS03/scaler_in864_out12.pkl'
@@ -22,19 +22,19 @@ adj_dir: "datasets/PEMS03/adj_mx.pkl"
 
 save_model: True
 model_save_path: 'checkpoints/PEMS03/'
-finetune_epochs: 100
-pretrain_epochs: 100
-adaptive: True
+finetune_epochs: 1
+pretrain_epochs: 1
+adaptive: False
+test_mode: True
 num_nodes: 358
 n_vertex: 358
 froward_features: [0]
 target_features: [0]
-lr: 0.002
+lr: 0.01
 momentum: 0.9
 metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 
-# 对比学习参数
-contrastive_weight: 0.1  # 对比学习损失权重
+contrastive_weight: 0.05
 
 evaluation_horizons : 12
 preTrain_batch_size: 8
@@ -56,9 +56,9 @@ decoder_depth: 1
 train:
     clip_grad_param:
         max_norm: 5.0
-    num_epochs: 100
+    num_epochs: 1
   
-    epochs: 100
+    epochs: 1
     null_val : 0.0
 
 mask_args: {
