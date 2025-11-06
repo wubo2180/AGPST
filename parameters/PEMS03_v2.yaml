@@ -25,7 +25,7 @@ model_save_path: 'checkpoints/PEMS03/'
 finetune_epochs: 1
 pretrain_epochs: 1
 adaptive: False
-test_mode: True
+test_mode: False
 num_nodes: 358
 n_vertex: 358
 froward_features: [0]
