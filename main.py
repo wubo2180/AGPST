@@ -176,7 +176,6 @@ def finetune(config, args):
 
             future_data, history_data, long_history_data = data
             batch_size = future_data.shape[0]
-            print("long_history_data", long_history_data.shape)
             long_history_data = select_input_features(long_history_data, config['froward_features'])
             history_data = select_input_features(history_data, config['target_features'])
             future_data = select_input_features(future_data, config['target_features'])
@@ -423,7 +422,7 @@ if __name__ == "__main__":
     parser.add_argument('--mode', default='pretrain', type=str, help='pretrain / finetune')
     parser.add_argument('--lossType', default='mae', type=str, help='pre-training loss type and default is mae. {mae, sce}')
     parser.add_argument('--preTrain_batch_size', default=8, type=int, help='pre-training batch size')
-    parser.add_argument('--batch_size', default=1, type=int, help='fine-tuning batch size')
+    parser.add_argument('--batch_size', default=32, type=int, help='fine-tuning batch size')
     
     parser.add_argument('--pretrain_epochs', default=100, type=int, help='pre-training epochs')
     parser.add_argument('--finetune_epochs', default=100, type=int, help='fine-tuning epochs')
