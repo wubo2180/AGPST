@@ -244,7 +244,6 @@ class finetune_model(nn.Module):
         short_term_history = history_data
         batch_size, _, num_nodes, _ = history_data.shape
         hidden_states = self.pretrain_model(long_history_data, epoch)
-        print("hidden_states shape:", hidden_states.shape)
         out_len = 1
         hidden_states = hidden_states[:, :, -out_len, :]
         y_hat = self.backend(short_term_history, hidden_states=hidden_states).transpose(1, 2).unsqueeze(-1)
