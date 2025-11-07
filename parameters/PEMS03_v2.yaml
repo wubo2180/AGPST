@@ -10,7 +10,7 @@ seq_len: 864
 gpu_num : 0
 device: 
 
-pre_trained_path: 'checkpoints/PEMS03/checkpoint_8.pt'
+pre_trained_path: 'checkpoints/PEMS03/checkpoint_20.pt'
 preTrain_dataset_dir: 'datasets/PEMS03/data_in864_out12.pkl'
 preTrain_dataset_index_dir: 'datasets/PEMS03/index_in864_out12.pkl'
 preTrain_scaler_dir: 'datasets/PEMS03/scaler_in864_out12.pkl'
