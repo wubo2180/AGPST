@@ -163,12 +163,21 @@ def finetune(config, args):
     val_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'valid',config['seq_len'])
     test_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'test',config['seq_len'])
     
-    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], num_workers = 4, shuffle=True)
-    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers = 4, shuffle=False)
-    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers = 4, shuffle=False)
+    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
+                                  num_workers=8, shuffle=True, pin_memory=True, 
+                                  persistent_workers=True, prefetch_factor=4)
+    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], 
+                                num_workers=4, shuffle=False, pin_memory=True,
+                                persistent_workers=True, prefetch_factor=2)
+    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], 
+                                 num_workers=4, shuffle=False, pin_memory=True,
+                                 persistent_workers=True, prefetch_factor=2)
     model = finetune_model(config['pre_trained_path'], config['mask_args'], config['backend_args'])
     model = model.to(config['device'])
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5,eps=1.0e-8)
+    
+    # 🚀 启用混合精度训练
+    scaler_amp = torch.cuda.amp.GradScaler()
     
     for epoch in range(config['finetune_epochs']):
         print('============ epoch {:d} ============'.format(epoch))
@@ -180,27 +189,32 @@ def finetune(config, args):
             history_data = select_input_features(history_data, config['target_features'])
             future_data = select_input_features(future_data, config['target_features'])
             
-            labels = future_data.to(config['device'])
-            history_data = history_data.to(config['device'])
-            long_history_data = long_history_data.to(config['device'])
-            
-            preds = model(history_data, long_history_data, future_data, batch_size, epoch)
-
-            prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
-            real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
-            
-            # 主损失
-            loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
-            
-            # 添加对比学习损失（如果存在）
-            if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
-                if isinstance(model.contrastive_loss, torch.Tensor):
-                    loss = loss + contrastive_weight * model.contrastive_loss
+            labels = future_data.to(config['device'], non_blocking=True)
+            history_data = history_data.to(config['device'], non_blocking=True)
+            long_history_data = long_history_data.to(config['device'], non_blocking=True)
             
             optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
+            
+            # 🚀 使用混合精度前向传播
+            with torch.cuda.amp.autocast():
+                preds = model(history_data, long_history_data, future_data, batch_size, epoch)
+
+                prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
+                real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
+                
+                # 主损失
+                loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
+                
+                # 添加对比学习损失（如果存在）
+                if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
+                    contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                    if isinstance(model.contrastive_loss, torch.Tensor):
+                        loss = loss + contrastive_weight * model.contrastive_loss
+            
+            # 🚀 使用混合精度反向传播
+            scaler_amp.scale(loss).backward()
+            scaler_amp.step(optimizer)
+            scaler_amp.update()
             
             # 测试模式：只处理一个batch
             if config.get('test_mode', False):
