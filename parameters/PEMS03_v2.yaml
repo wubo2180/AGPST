@@ -9,7 +9,7 @@ dataset_output_len : 12
 seq_len: 864
 gpu_num : 0
 device: 'cuda'
-test_mode: True
+test_mode: False
 swanlab_mode: 'disabled'
 mode: pretrain
 
@@ -25,8 +25,8 @@ adj_dir: "datasets/PEMS03/adj_mx.pkl"
 
 save_model: True
 model_save_path: 'checkpoints/PEMS03/'
-finetune_epochs: 1
-pretrain_epochs: 1
+finetune_epochs: 100
+pretrain_epochs: 100
 adaptive: False
 num_nodes: 358
 n_vertex: 358
@@ -39,7 +39,7 @@ metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 contrastive_weight: 0.05
 
 evaluation_horizons : 12
-preTrain_batch_size: 2
+preTrain_batch_size: 8
 batch_size: 16
 dim: 10
 graph_heads: 4
