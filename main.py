@@ -272,7 +272,7 @@ def pretrain(config, args):
 
 
     # 自适应设置数据加载参数
-    use_cuda = torch.cuda.is_available() and config['device'].type == 'cuda'
+    use_cuda = torch.cuda.is_available() and config['device'] == 'cuda'
     pin_memory = use_cuda
     cpu_count = os.cpu_count() or 4  # 处理None的情况
     num_workers = min(16, cpu_count) if use_cuda else 4
