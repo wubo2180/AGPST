@@ -320,48 +320,48 @@ def pretrain(config, args):
             loss = metric_forward(lossType, [reconstruction_masked_tokens, label_masked_tokens])
             
             # 检查主损失是否为NaN
-            if torch.isnan(loss).any():
-                print(f"❌ WARNING: Main loss is NaN at epoch {epoch}, batch {idx}")
-                print(f"reconstruction_masked_tokens stats: min={reconstruction_masked_tokens.min():.6f}, max={reconstruction_masked_tokens.max():.6f}")
-                print(f"label_masked_tokens stats: min={label_masked_tokens.min():.6f}, max={label_masked_tokens.max():.6f}")
-                continue
+            # if torch.isnan(loss).any():
+            #     print(f"❌ WARNING: Main loss is NaN at epoch {epoch}, batch {idx}")
+            #     print(f"reconstruction_masked_tokens stats: min={reconstruction_masked_tokens.min():.6f}, max={reconstruction_masked_tokens.max():.6f}")
+            #     print(f"label_masked_tokens stats: min={label_masked_tokens.min():.6f}, max={label_masked_tokens.max():.6f}")
+            #     continue
             
             # 添加对比学习损失（如果存在）
             total_loss = loss
-            if contrastive_loss is not None:
-                # 检查对比损失是否为NaN
-                if torch.isnan(contrastive_loss).any():
-                    print(f"❌ WARNING: Contrastive loss is NaN at epoch {epoch}, batch {idx}: {contrastive_loss.item()}")
-                    print("Skipping contrastive loss for this batch")
-                    contrastive_loss = None
-                else:
-                    contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
-                    if isinstance(contrastive_loss, torch.Tensor):
-                        total_loss = loss + contrastive_weight * contrastive_loss
-                        print(f"📊 Batch {idx}: main_loss={loss.item():.6f}, contrastive_loss={contrastive_loss.item():.6f}, total_loss={total_loss.item():.6f}")
+            # if contrastive_loss is not None:
+            #     # 检查对比损失是否为NaN
+            #     if torch.isnan(contrastive_loss).any():
+            #         print(f"❌ WARNING: Contrastive loss is NaN at epoch {epoch}, batch {idx}: {contrastive_loss.item()}")
+            #         print("Skipping contrastive loss for this batch")
+            #         contrastive_loss = None
+            #     else:
+            #         contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+            #         if isinstance(contrastive_loss, torch.Tensor):
+            #             total_loss = loss + contrastive_weight * contrastive_loss
+            #             print(f"📊 Batch {idx}: main_loss={loss.item():.6f}, contrastive_loss={contrastive_loss.item():.6f}, total_loss={total_loss.item():.6f}")
             
             # 检查总损失是否为NaN
-            if torch.isnan(total_loss).any():
-                print(f"❌ WARNING: Total loss is NaN at epoch {epoch}, batch {idx}: {total_loss.item()}")
-                continue
+            # if torch.isnan(total_loss).any():
+            #     print(f"❌ WARNING: Total loss is NaN at epoch {epoch}, batch {idx}: {total_loss.item()}")
+            #     continue
             
             optimizer.zero_grad()
             total_loss.backward()
             
-            # 检查梯度是否包含NaN
-            has_nan_grad = any(torch.isnan(param.grad).any() if param.grad is not None else False for param in model.parameters())
-            if has_nan_grad:
-                print(f"❌ WARNING: NaN gradients detected at epoch {epoch}, batch {idx}")
-                optimizer.zero_grad()  # 清除NaN梯度
-                continue
+            # # 检查梯度是否包含NaN
+            # has_nan_grad = any(torch.isnan(param.grad).any() if param.grad is not None else False for param in model.parameters())
+            # if has_nan_grad:
+            #     print(f"❌ WARNING: NaN gradients detected at epoch {epoch}, batch {idx}")
+            #     optimizer.zero_grad()  # 清除NaN梯度
+            #     continue
                 
             optimizer.step()
             loss_all += total_loss.item()
             
             # 测试模式：只处理一个batch
-            if config.get('test_mode'):
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
+            # if config.get('test_mode'):
+            #     print(f"Test mode: Only processing batch {idx+1}")
+            #     break
         
         loss_all = loss_all / (idx + 1)
         print("preTrain loss: ", loss_all)
