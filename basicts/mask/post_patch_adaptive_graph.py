@@ -57,8 +57,10 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
                 ) for _ in range(2)
             ])
         
-        # 可学习温度参数
+        # 可学习温度参数（避免过小值）
         self.temperature = nn.Parameter(torch.ones(graph_heads) * 0.5)
+        # 限制温度参数范围
+        self.temperature.data.clamp_(min=0.1, max=2.0)
         
         # 多尺度图学习：不同感受野的图学习分支
         self.local_graph_heads = graph_heads // 2  # 局部图头数
@@ -116,17 +118,19 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
         for h in range(self.local_graph_heads):
             adj = torch.mm(self.local_node_embeddings1[h], self.local_node_embeddings2[h])
             adj = F.relu(adj)
-            # 局部图使用更高的温度，关注近邻
-            adj = F.softmax(adj / (self.temperature[h] * 2), dim=1)
+            # 局部图使用更高的温度，关注近邻，并限制温度范围
+            temp = torch.clamp(self.temperature[h] * 2, min=0.1, max=5.0)
+            adj = F.softmax(adj / temp, dim=1)
             static_adjs.append(adj)
         
         # 全局图学习（捕获长距离关系）
         for h in range(self.global_graph_heads):
             adj = torch.mm(self.global_node_embeddings1[h], self.global_node_embeddings2[h])
             adj = F.relu(adj)
-            # 全局图使用较低的温度，关注全局模式
+            # 全局图使用较低的温度，关注全局模式，并限制温度范围
             temp_idx = h + self.local_graph_heads
-            adj = F.softmax(adj / (self.temperature[temp_idx] * 0.5), dim=1)
+            temp = torch.clamp(self.temperature[temp_idx] * 0.5, min=0.1, max=2.0)
+            adj = F.softmax(adj / temp, dim=1)
             static_adjs.append(adj)
             
         return torch.stack(static_adjs, dim=0)  # (H, N, N)
@@ -180,7 +184,8 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
                 
                 # 计算节点相似性作为临时邻接矩阵
                 similarity = torch.mm(node_features, node_features.t())  # (N, N)
-                similarity = F.softmax(similarity / 0.1, dim=1)  # 温度缩放
+                # 使用稳定的softmax
+                similarity = F.softmax(similarity / 0.2, dim=1)  # 增大温度提高稳定性
                 
                 # 图卷积：聚合邻居信息
                 aggregated = torch.mm(similarity, node_features)  # (N, node_dim)
@@ -199,13 +204,14 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
         for b in range(B):
             batch_adjs = []
             for h in range(self.graph_heads):
-                # 动态相似度 = 当前特征 × 静态嵌入
                 dynamic_sim = torch.mm(
                     dynamic_embeds[b],  # (N, node_dim)
                     self.static_node_embeddings2[h]  # (node_dim, N)
                 )
                 dynamic_sim = F.relu(dynamic_sim)
-                dynamic_sim = F.softmax(dynamic_sim / self.temperature[h], dim=1)
+                # 使用限制的温度参数
+                temp = torch.clamp(self.temperature[h], min=0.1, max=2.0)
+                dynamic_sim = F.softmax(dynamic_sim / temp, dim=1)
                 batch_adjs.append(dynamic_sim)
             
             dynamic_adjs.append(torch.stack(batch_adjs, dim=0))  # (H, N, N)
@@ -322,40 +328,74 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
         return final_adjs, static_adjs, dynamic_adjs, contrastive_loss
     
     def compute_contrastive_loss(self, node_embeddings):
-        """计算时空对比学习损失"""
+        """计算时空对比学习损失 - 数值稳定版本"""
         B, N, D = node_embeddings.shape
         
         # 投影到对比学习空间
         projected = self.contrastive_projection(node_embeddings)  # (B, N, D//4)
         
-        # 构造正负样本对
-        # 正样本：同一节点在不同时间的表示应该相似
-        # 负样本：不同节点的表示应该不同
+        # L2归一化确保数值稳定性
+        projected = F.normalize(projected, p=2, dim=-1)
         
+        # 构造正负样本对
         loss = 0.0
-        temperature = 0.1
+        temperature = 0.2  # 增大温度参数提高稳定性
+        eps = 1e-8  # 数值稳定性常数
         
         for b in range(B):
             node_features = projected[b]  # (N, D//4)
             
-            # 计算相似度矩阵
-            similarity_matrix = F.cosine_similarity(
-                node_features.unsqueeze(1), 
-                node_features.unsqueeze(0), 
-                dim=2
-            )  # (N, N)
+            # 计算余弦相似度矩阵，已归一化所以直接矩阵乘法
+            similarity_matrix = torch.mm(node_features, node_features.t())  # (N, N)
             
-            # 对比损失：同一节点自相似度最大化，不同节点相似度最小化
-            positive_loss = -torch.log(torch.exp(similarity_matrix.diag() / temperature) + 1e-8).mean()
+            # 限制相似度范围避免极值
+            similarity_matrix = torch.clamp(similarity_matrix, -0.99, 0.99)
             
-            # 负样本损失
-            mask = torch.eye(N, device=node_features.device).bool()
-            negative_similarities = similarity_matrix.masked_select(~mask)
-            negative_loss = torch.log(torch.exp(negative_similarities / temperature) + 1e-8).mean()
+            # 缩放温度
+            scaled_similarity = similarity_matrix / temperature
             
-            loss += positive_loss + 0.1 * negative_loss
+            # 使用log-sum-exp技巧提高数值稳定性
+            # 对比损失：InfoNCE loss的简化版本
+            diag_sim = torch.diag(scaled_similarity)  # (N,)
+            
+            # 为每个节点计算损失
+            node_losses = []
+            for i in range(N):
+                # 正样本：节点自己
+                pos_sim = scaled_similarity[i, i]
+                
+                # 负样本：所有其他节点
+                neg_sims = torch.cat([scaled_similarity[i, :i], scaled_similarity[i, i+1:]])
+                
+                # Log-sum-exp技巧
+                max_sim = torch.max(torch.cat([pos_sim.unsqueeze(0), neg_sims]))
+                
+                # 稳定的softmax计算
+                pos_exp = torch.exp(pos_sim - max_sim)
+                neg_exp_sum = torch.sum(torch.exp(neg_sims - max_sim))
+                
+                # InfoNCE损失
+                loss_i = -torch.log(pos_exp / (pos_exp + neg_exp_sum + eps))
+                
+                # 检查是否为NaN或无穷
+                if torch.isnan(loss_i) or torch.isinf(loss_i):
+                    print(f"Warning: NaN/Inf in contrastive loss for node {i}, batch {b}")
+                    print(f"pos_sim: {pos_sim.item()}, neg_sims range: [{neg_sims.min().item():.4f}, {neg_sims.max().item():.4f}]")
+                    loss_i = torch.tensor(0.0, device=node_features.device)
+                
+                node_losses.append(loss_i)
+            
+            batch_loss = torch.mean(torch.stack(node_losses))
+            loss += batch_loss
         
-        return loss / B
+        final_loss = loss / B
+        
+        # 最后检查
+        if torch.isnan(final_loss) or torch.isinf(final_loss):
+            print("Warning: Final contrastive loss is NaN/Inf, returning zero")
+            return torch.tensor(0.0, device=node_embeddings.device, requires_grad=True)
+        
+        return final_loss
 
 
 class PostPatchDynamicGraphConv(nn.Module):

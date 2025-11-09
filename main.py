@@ -163,21 +163,12 @@ def finetune(config, args):
     val_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'valid',config['seq_len'])
     test_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'test',config['seq_len'])
     
-    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], 
-                                  num_workers=8, shuffle=True, pin_memory=True, 
-                                  persistent_workers=True, prefetch_factor=4)
-    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], 
-                                num_workers=4, shuffle=False, pin_memory=True,
-                                persistent_workers=True, prefetch_factor=2)
-    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], 
-                                 num_workers=4, shuffle=False, pin_memory=True,
-                                 persistent_workers=True, prefetch_factor=2)
+    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=True)
+    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
+    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
     model = finetune_model(config['pre_trained_path'], config['mask_args'], config['backend_args'])
     model = model.to(config['device'])
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5,eps=1.0e-8)
-    
-    # 🚀 启用混合精度训练
-    scaler_amp = torch.cuda.amp.GradScaler()
     
     for epoch in range(config['finetune_epochs']):
         print('============ epoch {:d} ============'.format(epoch))
@@ -189,32 +180,27 @@ def finetune(config, args):
             history_data = select_input_features(history_data, config['target_features'])
             future_data = select_input_features(future_data, config['target_features'])
             
-            labels = future_data.to(config['device'], non_blocking=True)
-            history_data = history_data.to(config['device'], non_blocking=True)
-            long_history_data = long_history_data.to(config['device'], non_blocking=True)
+            labels = future_data.to(config['device'])
+            history_data = history_data.to(config['device'])
+            long_history_data = long_history_data.to(config['device'])
+            
+            preds = model(history_data, long_history_data, future_data, batch_size, epoch)
+
+            prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
+            real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
+            
+            # 主损失
+            loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
+            
+            # 添加对比学习损失（如果存在）
+            if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
+                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                if isinstance(model.contrastive_loss, torch.Tensor):
+                    loss = loss + contrastive_weight * model.contrastive_loss
             
             optimizer.zero_grad()
-            
-            # 🚀 使用混合精度前向传播
-            with torch.cuda.amp.autocast():
-                preds = model(history_data, long_history_data, future_data, batch_size, epoch)
-
-                prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
-                real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
-                
-                # 主损失
-                loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
-                
-                # 添加对比学习损失（如果存在）
-                if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-                    contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
-                    if isinstance(model.contrastive_loss, torch.Tensor):
-                        loss = loss + contrastive_weight * model.contrastive_loss
-            
-            # 🚀 使用混合精度反向传播
-            scaler_amp.scale(loss).backward()
-            scaler_amp.step(optimizer)
-            scaler_amp.update()
+            loss.backward()
+            optimizer.step()
             
             # 测试模式：只处理一个batch
             if config.get('test_mode', False):
@@ -283,16 +269,15 @@ def pretrain(config, args):
     preTrain_train_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'train', config['device'])
     preTrain_val_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'valid', config['device'])
     preTrain_test_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'test', config['device'])
-    
-    
-    train_data_loader = DataLoader(preTrain_train_dataset, batch_size=config['preTrain_batch_size'],num_workers = 4, shuffle=True, )
-    val_data_loader = DataLoader(preTrain_val_dataset, batch_size=config['preTrain_batch_size'], num_workers = 4, shuffle=False)
-    test_data_loader = DataLoader(preTrain_test_dataset, batch_size=config['preTrain_batch_size'], num_workers = 4, shuffle=False)
 
-    
-    model = pretrain_model(config['num_nodes'], config['dim'], 
-                           config['topK'], config['adaptive'], 
-                           config['pretrain_epochs'], config['patch_size'], 
+
+    train_data_loader = DataLoader(preTrain_train_dataset, batch_size=config['preTrain_batch_size'],num_workers = 8, shuffle=True, )
+    val_data_loader = DataLoader(preTrain_val_dataset, batch_size=config['preTrain_batch_size'], num_workers = 8, shuffle=False)
+    test_data_loader = DataLoader(preTrain_test_dataset, batch_size=config['preTrain_batch_size'], num_workers = 8, shuffle=False)
+
+    model = pretrain_model(config['num_nodes'], config['dim'],
+                           config['topK'], config['adaptive'],
+                           config['pretrain_epochs'], config['patch_size'],
                            config['in_channel'], config['embed_dim'], 
                            config['num_heads'], config['graph_heads'], 
                            config['mlp_ratio'], config['dropout'],
@@ -334,20 +319,47 @@ def pretrain(config, args):
             # 主损失（重构损失）
             loss = metric_forward(lossType, [reconstruction_masked_tokens, label_masked_tokens])
             
+            # 检查主损失是否为NaN
+            if torch.isnan(loss).any():
+                print(f"❌ WARNING: Main loss is NaN at epoch {epoch}, batch {idx}")
+                print(f"reconstruction_masked_tokens stats: min={reconstruction_masked_tokens.min():.6f}, max={reconstruction_masked_tokens.max():.6f}")
+                print(f"label_masked_tokens stats: min={label_masked_tokens.min():.6f}, max={label_masked_tokens.max():.6f}")
+                continue
+            
             # 添加对比学习损失（如果存在）
             total_loss = loss
             if contrastive_loss is not None:
-                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
-                if isinstance(contrastive_loss, torch.Tensor):
-                    total_loss = loss + contrastive_weight * contrastive_loss
+                # 检查对比损失是否为NaN
+                if torch.isnan(contrastive_loss).any():
+                    print(f"❌ WARNING: Contrastive loss is NaN at epoch {epoch}, batch {idx}: {contrastive_loss.item()}")
+                    print("Skipping contrastive loss for this batch")
+                    contrastive_loss = None
+                else:
+                    contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                    if isinstance(contrastive_loss, torch.Tensor):
+                        total_loss = loss + contrastive_weight * contrastive_loss
+                        print(f"📊 Batch {idx}: main_loss={loss.item():.6f}, contrastive_loss={contrastive_loss.item():.6f}, total_loss={total_loss.item():.6f}")
+            
+            # 检查总损失是否为NaN
+            if torch.isnan(total_loss).any():
+                print(f"❌ WARNING: Total loss is NaN at epoch {epoch}, batch {idx}: {total_loss.item()}")
+                continue
             
             optimizer.zero_grad()
             total_loss.backward()
+            
+            # 检查梯度是否包含NaN
+            has_nan_grad = any(torch.isnan(param.grad).any() if param.grad is not None else False for param in model.parameters())
+            if has_nan_grad:
+                print(f"❌ WARNING: NaN gradients detected at epoch {epoch}, batch {idx}")
+                optimizer.zero_grad()  # 清除NaN梯度
+                continue
+                
             optimizer.step()
             loss_all += total_loss.item()
             
             # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
+            if config.get('test_mode'):
                 print(f"Test mode: Only processing batch {idx+1}")
                 break
         
@@ -391,31 +403,21 @@ def main(config, args):
             "learning_rate": config['lr'],
             "topK": config['topK'],
             "adaptive": config['adaptive'],
-        }
+        },
+        mode=config.get('swanlab_mode', 'online'),
     )
 
-    if args.mode == 'pretrain':
+    if config.get('mode') == 'pretrain':
         model = pretrain(config, args)
         model = model.cpu()
-    elif args.mode == 'finetune':
+    elif config.get('mode') == 'forecasting':
         finetune(config, args)
     else:
         print("mode error")
     swanlab.finish()
 
 
-def update_config(config, args):
-    device = torch.device("cuda:" + str(args.device)) if torch.cuda.is_available() else torch.device("cpu")
-    config['device'], args.device = device, device
-        
-    config['preTrain_batch_size'] = args.preTrain_batch_size
-    config['batch_size'] = args.batch_size
-    
-    config['pretrain_epochs'] = args.pretrain_epochs
-    config['finetune_epochs'] = args.finetune_epochs
-    config['mask_ratio'] = args.mask_ratio
-    
-    return config
+
 
 
 def seed_torch(seed=0):
@@ -433,24 +435,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
     parser.add_argument('--config', default='./parameters/PEMS03_v2.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default=0, type=int, help='device')
-    parser.add_argument('--mode', default='pretrain', type=str, help='pretrain / finetune')
     parser.add_argument('--lossType', default='mae', type=str, help='pre-training loss type and default is mae. {mae, sce}')
     parser.add_argument('--preTrain_batch_size', default=8, type=int, help='pre-training batch size')
-    parser.add_argument('--batch_size', default=32, type=int, help='fine-tuning batch size')
-    
-    parser.add_argument('--pretrain_epochs', default=100, type=int, help='pre-training epochs')
-    parser.add_argument('--finetune_epochs', default=100, type=int, help='fine-tuning epochs')
-    
-    parser.add_argument('--preTrainVal', default="true", type=str, help='pre-training validate or not')
-    parser.add_argument('--mask_ratio', default=0.25, type=float, help='mask ratio')
+
+    # parser.add_argument('--preTrainVal', default="true", type=str, help='pre-training validate or not')
     parser.add_argument('--device_ids', default=0, type=int, help='Number of GPUs available')
     
     args = parser.parse_args()
     
     with open(args.config, 'r') as f:
         config = yaml.safe_load(f)
-    
-    config = update_config(config, args)
-
     seed_torch(seed=0)
     main(config, args)

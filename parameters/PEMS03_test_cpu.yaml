@@ -9,6 +9,7 @@ dataset_output_len : 12
 seq_len: 864
 gpu_num : 0
 device: 'cpu'
+test_mode: True
 
 pre_trained_path: 'checkpoints/PEMS03/checkpoint_0.pt'
 preTrain_dataset_dir: 'datasets/PEMS03/data_in864_out12.pkl'
@@ -34,7 +35,7 @@ lr: 0.01
 momentum: 0.9
 metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 
-contrastive_weight: 0.05
+contrastive_weight: 0.01
 
 evaluation_horizons : 12
 preTrain_batch_size: 8
