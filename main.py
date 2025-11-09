@@ -271,9 +271,33 @@ def pretrain(config, args):
     preTrain_test_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'test', config['device'])
 
 
-    train_data_loader = DataLoader(preTrain_train_dataset, batch_size=config['preTrain_batch_size'], num_workers=8, shuffle=True, pin_memory=True, persistent_workers=True)
-    val_data_loader = DataLoader(preTrain_val_dataset, batch_size=config['preTrain_batch_size'], num_workers=8, shuffle=False, pin_memory=True, persistent_workers=True)
-    test_data_loader = DataLoader(preTrain_test_dataset, batch_size=config['preTrain_batch_size'], num_workers=8, shuffle=False, pin_memory=True, persistent_workers=True)
+    # 自适应设置数据加载参数
+    use_cuda = torch.cuda.is_available() and config['device'].type == 'cuda'
+    pin_memory = use_cuda
+    cpu_count = os.cpu_count() or 4  # 处理None的情况
+    num_workers = min(16, cpu_count) if use_cuda else 4
+    
+    train_data_loader = DataLoader(preTrain_train_dataset, 
+                                  batch_size=config['preTrain_batch_size'], 
+                                  num_workers=num_workers, 
+                                  shuffle=True, 
+                                  pin_memory=pin_memory, 
+                                  persistent_workers=True if num_workers > 0 else False,
+                                  prefetch_factor=4 if num_workers > 0 else None)
+    val_data_loader = DataLoader(preTrain_val_dataset, 
+                                batch_size=config['preTrain_batch_size'], 
+                                num_workers=num_workers//2, 
+                                shuffle=False, 
+                                pin_memory=pin_memory, 
+                                persistent_workers=True if num_workers > 0 else False,
+                                prefetch_factor=2 if num_workers > 0 else None)
+    test_data_loader = DataLoader(preTrain_test_dataset, 
+                                 batch_size=config['preTrain_batch_size'], 
+                                 num_workers=num_workers//2, 
+                                 shuffle=False, 
+                                 pin_memory=pin_memory, 
+                                 persistent_workers=True if num_workers > 0 else False,
+                                 prefetch_factor=2 if num_workers > 0 else None)
 
     model = pretrain_model(config['num_nodes'], config['dim'],
                            config['topK'], config['adaptive'],
@@ -294,17 +318,23 @@ def pretrain(config, args):
         lossType = masked_mae
     elif args.lossType == 'sce':
         lossType = sce_loss
-    print("config['pretrain_epochs']:",config['pretrain_epochs'])
+    print("config['pretrain_epochs']:", config['pretrain_epochs'])
+    
+    # 预分配变量以减少重复创建
+    loss_accumulator = 0.0
+    batch_count = 0
+    
     for epoch in range(config['pretrain_epochs']):
         print('============ epoch {:d} ============'.format(epoch))
-        loss_all = 0.0
-        mask_ratio = 0
+        model.train()  # 确保训练模式
+        loss_accumulator = 0.0
+        batch_count = 0
+        
         for idx, data in enumerate(tqdm(train_data_loader)):
-
             future_data, history_data = data
             
             history_data = select_input_features(history_data, config['froward_features'])
-            history_data = history_data.to(config['device'])
+            history_data = history_data.to(config['device'], non_blocking=True)
             
             # 获取模型输出
             model_output = model(history_data, epoch)
@@ -322,25 +352,39 @@ def pretrain(config, args):
             # 添加对比学习损失（如果存在）
             total_loss = loss
             if contrastive_loss is not None:
-                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
+                contrastive_weight = config.get('contrastive_weight', 0.1)
                 if isinstance(contrastive_loss, torch.Tensor):
                     total_loss = loss + contrastive_weight * contrastive_loss
             
             optimizer.zero_grad()
             total_loss.backward()
+            
+            # 梯度裁剪防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
             optimizer.step()
-            loss_all += total_loss.item()
+            
+            # 累积损失，减少.item()调用频率
+            loss_accumulator += total_loss.detach()
+            batch_count += 1
             
             # 测试模式：只处理一个batch
             if config.get('test_mode', False):
                 print(f"Test mode: Only processing batch {idx+1}")
                 break
         
-        loss_all = loss_all / (idx + 1)
-        print("preTrain loss: ", loss_all)
+        # epoch结束时计算平均损失
+        if batch_count > 0:
+            if isinstance(loss_accumulator, torch.Tensor):
+                avg_loss = (loss_accumulator / batch_count).item()
+            else:
+                avg_loss = loss_accumulator / batch_count
+        else:
+            avg_loss = 0.0
+        print(f"preTrain loss: {avg_loss:.6f}")
         
         # 记录预训练损失
-        log_dict = {"pretrain/loss": loss_all}
+        log_dict = {"pretrain/loss": avg_loss}
         # 如果有对比学习损失，也记录下来（使用最后一个batch的值作为示例）
         if contrastive_loss is not None and isinstance(contrastive_loss, torch.Tensor):
             log_dict["pretrain/contrastive_loss"] = contrastive_loss.item()

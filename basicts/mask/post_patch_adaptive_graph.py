@@ -215,46 +215,54 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
         return dynamic_sims  # (B, H, N, N)
     
     def apply_topk_sparsification(self, adj_matrices):
-        """对邻接矩阵进行Top-K稀疏化"""
+        """对邻接矩阵进行Top-K稀疏化 - 完全向量化版本"""
         if self.topk >= self.num_nodes:
             return adj_matrices
         
         # 创建副本避免inplace操作
         adj_matrices = adj_matrices.clone()
             
-        # 确定输入维度
+        # 向量化Top-K处理
         if adj_matrices.dim() == 3:  # (H, N, N) - 静态图
-            H, N, N = adj_matrices.shape
-            sparsified_adjs = []
-            for h in range(H):
-                adj = adj_matrices[h]
-                topk_values, topk_indices = torch.topk(adj, self.topk, dim=1)
-                mask = torch.zeros_like(adj)
-                mask.scatter_(1, topk_indices, 1)
-                sparse_adj = adj * mask
-                # 重新归一化
-                row_sum = sparse_adj.sum(1, keepdim=True)
-                sparse_adj = sparse_adj / (row_sum + 1e-8)
-                sparsified_adjs.append(sparse_adj)
-            return torch.stack(sparsified_adjs, dim=0)
+            # 向量化topk和mask操作
+            topk_values, topk_indices = torch.topk(adj_matrices, self.topk, dim=2)  # (H, N, K)
+            
+            # 创建mask
+            H, N, _ = adj_matrices.shape
+            mask = torch.zeros_like(adj_matrices)  # (H, N, N)
+            
+            # 批量scatter操作
+            batch_idx = torch.arange(H).view(H, 1, 1).expand(-1, N, self.topk)
+            row_idx = torch.arange(N).view(1, N, 1).expand(H, -1, self.topk)
+            mask[batch_idx, row_idx, topk_indices] = 1
+            
+            # 应用mask和归一化
+            sparse_adj = adj_matrices * mask
+            row_sum = sparse_adj.sum(2, keepdim=True)
+            sparse_adj = sparse_adj / (row_sum + 1e-8)
+            
+            return sparse_adj
                 
         elif adj_matrices.dim() == 4:  # (B, H, N, N) - 动态图
-            B, H, N, N = adj_matrices.shape
-            sparsified_adjs = []
-            for b in range(B):
-                batch_adjs = []
-                for h in range(H):
-                    adj = adj_matrices[b, h]
-                    topk_values, topk_indices = torch.topk(adj, self.topk, dim=1)
-                    mask = torch.zeros_like(adj)
-                    mask.scatter_(1, topk_indices, 1)
-                    sparse_adj = adj * mask
-                    # 重新归一化
-                    row_sum = sparse_adj.sum(1, keepdim=True)
-                    sparse_adj = sparse_adj / (row_sum + 1e-8)
-                    batch_adjs.append(sparse_adj)
-                sparsified_adjs.append(torch.stack(batch_adjs, dim=0))
-            return torch.stack(sparsified_adjs, dim=0)
+            # 向量化4D tensor的topk处理
+            topk_values, topk_indices = torch.topk(adj_matrices, self.topk, dim=3)  # (B, H, N, K)
+            
+            # 创建mask
+            B, H, N, _ = adj_matrices.shape
+            mask = torch.zeros_like(adj_matrices)  # (B, H, N, N)
+            
+            # 批量scatter操作
+            batch_idx = torch.arange(B).view(B, 1, 1, 1).expand(-1, H, N, self.topk)
+            head_idx = torch.arange(H).view(1, H, 1, 1).expand(B, -1, N, self.topk)
+            row_idx = torch.arange(N).view(1, 1, N, 1).expand(B, H, -1, self.topk)
+            mask[batch_idx, head_idx, row_idx, topk_indices] = 1
+            
+            # 应用mask和归一化
+            sparse_adj = adj_matrices * mask
+            row_sum = sparse_adj.sum(3, keepdim=True)
+            sparse_adj = sparse_adj / (row_sum + 1e-8)
+            
+            return sparse_adj
         
         return adj_matrices
     
