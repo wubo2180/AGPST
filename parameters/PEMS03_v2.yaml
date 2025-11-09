@@ -9,8 +9,8 @@ dataset_output_len : 12
 seq_len: 864
 gpu_num : 0
 device: 'cuda'
-test_mode: True
-swanlab_mode: 'disabled'
+test_mode: False
+swanlab_mode: 'online'
 mode: pretrain
 
 pre_trained_path: 'checkpoints/PEMS03/checkpoint_0.pt'
@@ -25,8 +25,8 @@ adj_dir: "datasets/PEMS03/adj_mx.pkl"
 
 save_model: True
 model_save_path: 'checkpoints/PEMS03/'
-finetune_epochs: 1
-pretrain_epochs: 1
+finetune_epochs: 100
+pretrain_epochs: 100
 adaptive: False
 num_nodes: 358
 n_vertex: 358
