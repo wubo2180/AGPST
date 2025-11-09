@@ -195,8 +195,16 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
         static_embeds_stack = torch.stack([self.static_node_embeddings2[h] for h in range(self.graph_heads)], dim=0)
         
         # 向量化计算: (B, N, node_dim) × (H, node_dim, N) -> (B, H, N, N)
-        # 使用einsum进行高效计算
-        dynamic_sims = torch.einsum('bnd,hdn->bhnm', dynamic_embeds, static_embeds_stack)
+        # 使用更清晰的矩阵乘法替代einsum
+        B, N, D = dynamic_embeds.shape
+        H = self.graph_heads
+        
+        # 扩展维度用于批量计算
+        dynamic_expanded = dynamic_embeds.unsqueeze(1).expand(-1, H, -1, -1)  # (B, H, N, D)
+        static_expanded = static_embeds_stack.unsqueeze(0).expand(B, -1, -1, -1)  # (B, H, D, N)
+        
+        # 批量矩阵乘法
+        dynamic_sims = torch.matmul(dynamic_expanded, static_expanded)  # (B, H, N, N)
         dynamic_sims = F.relu(dynamic_sims)
         
         # 向量化温度缩放和softmax
