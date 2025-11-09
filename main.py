@@ -275,7 +275,7 @@ def pretrain(config, args):
     use_cuda = torch.cuda.is_available() and config['device'] == 'cuda'
     pin_memory = use_cuda
     cpu_count = os.cpu_count() or 4  # 处理None的情况
-    num_workers = min(16, cpu_count) if use_cuda else 4
+    num_workers = 8
     
     train_data_loader = DataLoader(preTrain_train_dataset, 
                                   batch_size=config['preTrain_batch_size'], 
