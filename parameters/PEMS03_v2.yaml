@@ -8,10 +8,10 @@ dataset_input_len : 12
 dataset_output_len : 12
 seq_len: 864
 gpu_num : 0
-device: 'cpu'
+device: 'cuda'
 test_mode: True
 swanlab_mode: disabled
-mode: forecasting
+mode: pretrain
 
 pre_trained_path: 'checkpoints/PEMS03/checkpoint_0.pt'
 preTrain_dataset_dir: 'datasets/PEMS03/data_in864_out12.pkl'
@@ -39,8 +39,8 @@ metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 contrastive_weight: 0.05
 
 evaluation_horizons : 12
-preTrain_batch_size: 4
-batch_size: 4
+preTrain_batch_size: 8
+batch_size: 16
 dim: 10
 graph_heads: 4
 topK: 10
