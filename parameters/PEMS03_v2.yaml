@@ -39,7 +39,7 @@ metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 contrastive_weight: 0.05
 
 evaluation_horizons : 12
-preTrain_batch_size: 16
+preTrain_batch_size: 8
 batch_size: 16
 dim: 10
 graph_heads: 4
