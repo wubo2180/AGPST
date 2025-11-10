@@ -167,7 +167,7 @@ def finetune(config, args):
     val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
     test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
     model = finetune_model(config['pre_trained_path'], config['mask_args'], config['backend_args'])
-    model = model.to(config['device'])
+    model = model.to(args.device)
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5,eps=1.0e-8)
     
     for epoch in range(config['finetune_epochs']):
@@ -180,10 +180,10 @@ def finetune(config, args):
             history_data = select_input_features(history_data, config['target_features'])
             future_data = select_input_features(future_data, config['target_features'])
             
-            labels = future_data.to(config['device'])
-            history_data = history_data.to(config['device'])
-            long_history_data = long_history_data.to(config['device'])
-            
+            labels = future_data.to(args.device)
+            history_data = history_data.to(args.device)
+            long_history_data = long_history_data.to(args.device)
+
             preds = model(history_data, long_history_data, future_data, batch_size, epoch)
 
             prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
@@ -203,7 +203,7 @@ def finetune(config, args):
             optimizer.step()
             
             # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
+            if args.test_mode:
                 print(f"Test mode: Only processing batch {idx+1}")
                 break
             
@@ -272,7 +272,7 @@ def pretrain(config, args):
 
 
     # 自适应设置数据加载参数
-    use_cuda = torch.cuda.is_available() and config['device'] == 'cuda'
+    use_cuda = torch.cuda.is_available() and args.device == 'cuda'
     pin_memory = use_cuda
     cpu_count = os.cpu_count() or 4  # 处理None的情况
     num_workers = 8
@@ -311,7 +311,7 @@ def pretrain(config, args):
     # if device_ids:
     #     model = DataParallel(model, device_ids=device_ids).to(device_ids[0]) 
     # else:
-    model = model.to(config['device'])
+    model = model.to(args.device)
     
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
     if args.lossType == 'mae':
@@ -334,8 +334,8 @@ def pretrain(config, args):
             future_data, history_data = data
             
             history_data = select_input_features(history_data, config['froward_features'])
-            history_data = history_data.to(config['device'], non_blocking=True)
-            
+            history_data = history_data.to(args.device, non_blocking=True)
+
             # 获取模型输出
             model_output = model(history_data, epoch)
             
@@ -421,13 +421,13 @@ def main(config, args):
             "topK": config['topK'],
             "adaptive": config['adaptive'],
         },
-        mode=config.get('swanlab_mode', 'online'),
+        mode=args.swanlab_mode,
     )
 
-    if config.get('mode') == 'pretrain':
+    if args.mode == 'pretrain':
         model = pretrain(config, args)
         model = model.cpu()
-    elif config.get('mode') == 'forecasting':
+    elif args.mode == 'forecasting':
         finetune(config, args)
     else:
         print("mode error")
@@ -451,10 +451,11 @@ def seed_torch(seed=0):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
     parser.add_argument('--config', default='./parameters/PEMS03_v2.yaml', type=str, help='Path to the YAML config file')
-    parser.add_argument('--device', default=0, type=int, help='device')
+    parser.add_argument('--device', default='cuda', type=str, help='device')
     parser.add_argument('--lossType', default='mae', type=str, help='pre-training loss type and default is mae. {mae, sce}')
-    parser.add_argument('--preTrain_batch_size', default=8, type=int, help='pre-training batch size')
-
+    parser.add_argument('--test_mode', default=0, type=int, help='test or not')
+    parser.add_argument('--swanlab_mode', default='online', type=str, help='swanlab mode online or disabled')
+    parser.add_argument('--mode', default='forecasting', type=str, help='pretrain or forecasting')
     # parser.add_argument('--preTrainVal', default="true", type=str, help='pre-training validate or not')
     parser.add_argument('--device_ids', default=0, type=int, help='Number of GPUs available')
     
