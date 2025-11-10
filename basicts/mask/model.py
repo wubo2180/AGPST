@@ -84,6 +84,12 @@ class pretrain_model(nn.Module):
             # 使用简化的patch embedding
             patches = self.patch_embedding(long_term_history)  # 输出: (B, N, P, d)
             
+            # 调试：检查patch embedding输出
+            if epoch <= 2:
+                print(f"[PATCH DEBUG] Patches shape: {patches.shape}, stats: min={patches.min():.6f}, max={patches.max():.6f}, mean={patches.mean():.6f}")
+                if torch.isnan(patches).any():
+                    print(f"[ERROR] NaN in patch embedding output!")
+            
             # Step 2: 🎯 动态图学习 (直接兼容 (B, N, P, D) 格式)
             graph_output = self.dynamic_graph_conv(patches)
             if len(graph_output) == 3:
@@ -94,9 +100,21 @@ class pretrain_model(nn.Module):
                 patches, learned_adj = graph_output
                 self.contrastive_loss = None
             
+            # 调试：检查graph conv输出
+            if epoch <= 2:
+                print(f"[GRAPH DEBUG] After graph conv: shape={patches.shape}, stats: min={patches.min():.6f}, max={patches.max():.6f}, mean={patches.mean():.6f}")
+                if torch.isnan(patches).any():
+                    print(f"[ERROR] NaN after graph conv!")
+            
             
             # Step 5: 位置编码 (保持原有逻辑)
             patches, self.pos_mat = self.positional_encoding(patches)
+            
+            # 调试：检查位置编码输出
+            if epoch <= 2:
+                print(f"[POS DEBUG] After positional encoding: shape={patches.shape}, stats: min={patches.min():.6f}, max={patches.max():.6f}, mean={patches.mean():.6f}")
+                if torch.isnan(patches).any():
+                    print(f"[ERROR] NaN after positional encoding!")
 
  
             if self.adaptive:
@@ -116,7 +134,21 @@ class pretrain_model(nn.Module):
                 print(f"[MASK DEBUG] Total patches: {patches.shape[2]}, Unmasked: {len(unmasked_token_index)}, Masked: {len(masked_token_index)}")
             
             encoder_input = patches[:, :, unmasked_token_index, :]
+            
+            # 调试：检查encoder输入
+            if epoch <= 2:
+                print(f"[ENCODER DEBUG] Input shape: {encoder_input.shape}, stats: min={encoder_input.min():.6f}, max={encoder_input.max():.6f}, mean={encoder_input.mean():.6f}")
+                if torch.isnan(encoder_input).any():
+                    print(f"[ERROR] NaN detected in encoder input!")
+            
             hidden_states_unmasked = self.encoder(encoder_input)
+            
+            # 调试：检查encoder输出
+            if epoch <= 2:
+                print(f"[ENCODER DEBUG] Output shape: {hidden_states_unmasked.shape}, stats: min={hidden_states_unmasked.min():.6f}, max={hidden_states_unmasked.max():.6f}, mean={hidden_states_unmasked.mean():.6f}")
+                if torch.isnan(hidden_states_unmasked).any():
+                    print(f"[ERROR] NaN detected in encoder output!")
+            
             hidden_states_unmasked = self.encoder_norm(hidden_states_unmasked).view(batch_size, num_nodes, -1, self.embed_dim)
         else:
             # 推理模式 (不使用mask)
@@ -148,6 +180,15 @@ class pretrain_model(nn.Module):
     def decoding(self, hidden_states_unmasked, masked_token_index):
         batch_size, num_nodes, num_time, _ = hidden_states_unmasked.shape
         
+        # 调试：检查decoder输入
+        if hasattr(self, '_debug_decode') and self._debug_decode < 3:
+            print(f"[DECODER DEBUG] Input shape: {hidden_states_unmasked.shape}, stats: min={hidden_states_unmasked.min():.6f}, max={hidden_states_unmasked.max():.6f}")
+            if torch.isnan(hidden_states_unmasked).any():
+                print(f"[ERROR] NaN in decoder input!")
+            self._debug_decode += 1
+        elif not hasattr(self, '_debug_decode'):
+            self._debug_decode = 0
+        
         if masked_token_index is not None:
             # 训练模式 - 处理masked tokens
             unmasked_token_index = [i for i in range(0, len(masked_token_index)+num_time) if i not in masked_token_index]
@@ -167,9 +208,22 @@ class pretrain_model(nn.Module):
         
         hidden_states_full = self.decoder(hidden_states_full)
         hidden_states_full = self.decoder_norm(hidden_states_full)
+        
+        # 调试：检查decoder输出
+        if hasattr(self, '_debug_decode') and self._debug_decode < 3:
+            print(f"[DECODER DEBUG] After decoder: shape={hidden_states_full.shape}, stats: min={hidden_states_full.min():.6f}, max={hidden_states_full.max():.6f}")
+            if torch.isnan(hidden_states_full).any():
+                print(f"[ERROR] NaN after decoder!")
+        
         # hidden_states_full, _ = self.GNN_decoder((hidden_states_full))
 
         reconstruction_full = self.output_layer(hidden_states_full.view(batch_size, num_nodes, -1, self.embed_dim))
+        
+        # 调试：检查output_layer输出
+        if hasattr(self, '_debug_decode') and self._debug_decode < 3:
+            print(f"[DECODER DEBUG] Final reconstruction: shape={reconstruction_full.shape}, stats: min={reconstruction_full.min():.6f}, max={reconstruction_full.max():.6f}")
+            if torch.isnan(reconstruction_full).any():
+                print(f"[ERROR] NaN in final reconstruction!")
 
         return reconstruction_full
     def get_reconstructed_masked_tokens(self, reconstruction_full, real_value_full, unmasked_token_index,
