@@ -81,6 +81,14 @@ class pretrain_model(nn.Module):
             
             batch_size, num_nodes, num_time, C = long_term_history.shape
             
+            # 调试：检查输入数据
+            if epoch <= 2:
+                print(f"[INPUT DEBUG] Input shape: {long_term_history.shape}, stats: min={long_term_history.min():.6f}, max={long_term_history.max():.6f}, mean={long_term_history.mean():.6f}")
+                if torch.isnan(long_term_history).any():
+                    print(f"[ERROR] NaN in input data!")
+                if torch.isinf(long_term_history).any():
+                    print(f"[ERROR] Inf in input data!")
+            
             # 使用简化的patch embedding
             patches = self.patch_embedding(long_term_history)  # 输出: (B, N, P, d)
             
