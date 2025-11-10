@@ -349,12 +349,25 @@ def pretrain(config, args):
             # 主损失（重构损失）
             loss = metric_forward(lossType, [reconstruction_masked_tokens, label_masked_tokens])
             
+            # 调试信息 - 只在第一个epoch的前几个batch打印
+            if epoch <= 1 and idx < 3:
+                print(f"\n[DEBUG Epoch {epoch} Batch {idx}]")
+                print(f"  Reconstruction shape: {reconstruction_masked_tokens.shape}")
+                print(f"  Label shape: {label_masked_tokens.shape}")
+                print(f"  Reconstruction stats: min={reconstruction_masked_tokens.min():.6f}, max={reconstruction_masked_tokens.max():.6f}, mean={reconstruction_masked_tokens.mean():.6f}")
+                print(f"  Label stats: min={label_masked_tokens.min():.6f}, max={label_masked_tokens.max():.6f}, mean={label_masked_tokens.mean():.6f}")
+                print(f"  Main loss: {loss.item():.6f}")
+                if contrastive_loss is not None:
+                    print(f"  Contrastive loss: {contrastive_loss.item():.6f}")
+            
             # 添加对比学习损失（如果存在）
             total_loss = loss
             if contrastive_loss is not None:
                 contrastive_weight = config.get('contrastive_weight', 0.1)
                 if isinstance(contrastive_loss, torch.Tensor):
                     total_loss = loss + contrastive_weight * contrastive_loss
+                    if epoch <= 1 and idx < 3:
+                        print(f"  Total loss (with contrastive): {total_loss.item():.6f}")
             
             optimizer.zero_grad()
             total_loss.backward()

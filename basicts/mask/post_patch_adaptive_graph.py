@@ -328,6 +328,15 @@ class PostPatchAdaptiveGraphLearner(nn.Module):
             node_repr = patch_features.mean(dim=2)  # (B, N, D)
             node_embeddings = self.dynamic_encoder(node_repr)  # (B, N, node_dim)
             contrastive_loss = self.compute_contrastive_loss(node_embeddings)
+            
+            # 调试信息
+            if hasattr(self, '_debug_counter'):
+                self._debug_counter += 1
+            else:
+                self._debug_counter = 0
+            
+            if self._debug_counter < 5:  # 只打印前5次
+                print(f"[CONTRASTIVE DEBUG {self._debug_counter}] Loss: {contrastive_loss.item():.6f}, Training: {self.training}")
         
         return final_adjs, static_adjs, dynamic_adjs, contrastive_loss
     

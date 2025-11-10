@@ -103,9 +103,17 @@ class pretrain_model(nn.Module):
                 mask_ratio = self.mask_ratio * math.pow(epoch+1 / self.epochs, self.lamda)
             else:
                 mask_ratio = self.mask_ratio
+            
+            # 调试信息
+            if epoch <= 2:
+                print(f"[MASK DEBUG Epoch {epoch}] mask_ratio={mask_ratio:.4f}, adaptive={self.adaptive}")
                 
             Maskg = MaskGenerator(patches.shape[2], mask_ratio)
             unmasked_token_index, masked_token_index = Maskg.uniform_rand()
+            
+            # 检查mask是否生效
+            if epoch <= 2:
+                print(f"[MASK DEBUG] Total patches: {patches.shape[2]}, Unmasked: {len(unmasked_token_index)}, Masked: {len(masked_token_index)}")
             
             encoder_input = patches[:, :, unmasked_token_index, :]
             hidden_states_unmasked = self.encoder(encoder_input)
