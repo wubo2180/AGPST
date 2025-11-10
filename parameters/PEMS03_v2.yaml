@@ -11,9 +11,9 @@ gpu_num : 0
 device: 'cuda'
 test_mode: False
 swanlab_mode: 'online'
-mode: pretrain
+mode: finetune
 
-pre_trained_path: 'checkpoints/PEMS03/checkpoint_0.pt'
+pre_trained_path: 'checkpoints/PEMS03/checkpoint_30.pt'
 preTrain_dataset_dir: 'datasets/PEMS03/data_in864_out12.pkl'
 preTrain_dataset_index_dir: 'datasets/PEMS03/index_in864_out12.pkl'
 preTrain_scaler_dir: 'datasets/PEMS03/scaler_in864_out12.pkl'
@@ -25,8 +25,8 @@ adj_dir: "datasets/PEMS03/adj_mx.pkl"
 
 save_model: True
 model_save_path: 'checkpoints/PEMS03/'
-finetune_epochs: 100
-pretrain_epochs: 100
+finetune_epochs: 50
+pretrain_epochs: 50
 adaptive: False
 num_nodes: 358
 n_vertex: 358
