@@ -1,0 +1,16 @@
+{
+    "name": "Heartbeat",
+    "num_classes": 2,
+    "class_names": [
+        "abnormal",
+        "normal"
+    ],
+    "equal_length": true,
+    "seq_len": 405,
+    "num_nodes": 61,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

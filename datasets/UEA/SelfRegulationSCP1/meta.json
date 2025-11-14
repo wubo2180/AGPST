@@ -1,0 +1,16 @@
+{
+    "name": "SelfRegulationSCP1",
+    "num_classes": 2,
+    "class_names": [
+        "negativity",
+        "positivity"
+    ],
+    "equal_length": true,
+    "seq_len": 896,
+    "num_nodes": 6,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

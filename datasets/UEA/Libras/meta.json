@@ -1,0 +1,29 @@
+{
+    "name": "Libras",
+    "num_classes": 15,
+    "class_names": [
+        "1",
+        "10",
+        "11",
+        "12",
+        "13",
+        "14",
+        "15",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9"
+    ],
+    "equal_length": true,
+    "seq_len": 45,
+    "num_nodes": 2,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

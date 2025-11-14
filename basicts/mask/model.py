@@ -14,8 +14,8 @@ class AGPSTModel(nn.Module):
     3. 图卷积 + Transformer
     4. GraphWaveNet预测
     """
-    def __init__(self, num_nodes, dim, topK, patch_size, in_channel, embed_dim, 
-                 num_heads, graph_heads, mlp_ratio, dropout, encoder_depth, backend_args):
+    def __init__(self, num_nodes, dim, topK, in_channel, embed_dim, 
+                 num_heads, mlp_ratio, dropout, encoder_depth, backend_args):
         super().__init__()
         self.num_nodes = num_nodes
         self.embed_dim = embed_dim
@@ -107,7 +107,7 @@ class AGPSTModel(nn.Module):
         
         return x
         
-    def forward(self, history_data, long_history_data=None, future_data=None, batch_size=None, epoch=None):
+    def forward(self, history_data):
         """
         Args:
             history_data: (B, 12, N, 1) 短期历史
@@ -116,12 +116,13 @@ class AGPSTModel(nn.Module):
         Returns:
             prediction: (B, 12, N, 1) 预测结果
         """
+        
         # 使用短期历史数据
         B, T, N, C = history_data.shape
-        
+
         # 转换格式: (B, T, N, C) -> (B, N, T, C)
         x = history_data.permute(0, 2, 1, 3)  # (B, N, T, C)
-        
+
         # Step 1: 时间特征嵌入
         x = self.time_embedding(x)  # (B, N, T, D)
         
@@ -141,16 +142,20 @@ class AGPSTModel(nn.Module):
         x_flat = self.transformer(x_flat)  # (B*N, T, D)
         x = x_flat.reshape(B, N, T, D)  # (B, N, T, D)
         
-        # Step 6: 时间聚合
-        x_agg = x.mean(dim=2)  # (B, N, D)
+        # Step 6: 准备 GraphWaveNet 的输入
+        # GraphWaveNet 需要:
+        #   - input: (B, L, N, C) 原始历史数据
+        #   - hidden_states: (B, N, d) Transformer最后一个时间步的输出
         
-        # Step 7: 后端预测
-        # GraphWaveNet需要: (B, D, N, 1)
-        backend_input = x_agg.permute(0, 2, 1).unsqueeze(-1)  # (B, D, N, 1)
-        prediction = self.backend(backend_input)  # (B, N, 12, 1)
+        # 提取 hidden_states: 使用最后一个时间步的输出 (B, N, D)
+        hidden_states = x[:, :, -1, :]  # (B, N, 96)
         
-        # 转换输出格式: (B, N, 12, 1) -> (B, 12, N, 1)
-        prediction = prediction.permute(0, 2, 1, 3)
+        # Step 7: GraphWaveNet 预测
+        # 输入原始历史数据 (B, T, N, C) 和 Transformer 特征
+        prediction = self.backend(history_data, hidden_states)  # (B, N, 12)
+        
+        # 转换输出格式: (B, N, 12) -> (B, 12, N, 1)
+        prediction = prediction.permute(0, 2, 1).unsqueeze(-1)  # (B, 12, N, 1)
         
         return prediction
 

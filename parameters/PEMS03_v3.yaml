@@ -1,0 +1,93 @@
+# ============================================================================
+# AGPST Direct Forecasting Configuration
+# Dataset: PEMS03
+# Model: Simplified AGPST (No Patch Embedding)
+# ============================================================================
+
+# --------------------- Basic Information ---------------------
+description: 'Direct Forecasting with Adaptive Graph Learning'
+model_name: 'AGPST_DirectForecasting'
+dataset_name: "PEMS03"
+dataset_type: "Traffic speed"
+mode: train
+
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
+
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/PEMS03/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 358
+n_vertex: 358
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
+
+# --------------------- Training Configuration ---------------------
+epochs: 100
+batch_size: 32
+lr: 0.001
+evaluation_horizons: 12
+
+# Gradient clipping
+train:
+    clip_grad_param:
+        max_norm: 5.0
+    null_val: 0.0
+
+# --------------------- Model Architecture ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
+
+# Adaptive graph learning
+dim: 10
+topK: 10
+
+# Time embedding
+embed_dim: 96
+dropout: 0.1
+
+# Transformer encoder
+encoder_depth: 4
+num_heads: 4
+mlp_ratio: 4
+
+# GraphWaveNet backend
+backend_args:
+    num_nodes: 358
+    supports: ''
+    dropout: 0.3
+    gcn_bool: True
+    addaptadj: True
+    aptinit: null
+    in_dim: 1
+    out_dim: 12
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 256
+    end_channels: 512
+    kernel_size: 2
+    blocks: 4
+    layers: 2
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/PEMS03_DirectForecasting/'
+
+# --------------------- Logging Configuration ---------------------
+test_mode: False
+swanlab_mode: 'online'
+

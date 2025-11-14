@@ -1,0 +1,24 @@
+{
+    "name": "InsectWingbeat",
+    "num_classes": 10,
+    "class_names": [
+        "aedes_female",
+        "aedes_male",
+        "fruit_flies",
+        "house_flies",
+        "quinx_female",
+        "quinx_male",
+        "stigma_female",
+        "stigma_male",
+        "tarsalis_female",
+        "tarsalis_male"
+    ],
+    "equal_length": false,
+    "seq_len": 22,
+    "num_nodes": 200,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

@@ -1,0 +1,19 @@
+{
+    "name": "DuckDuckGeese",
+    "num_classes": 5,
+    "class_names": [
+        "black-bellied_whistling_duck",
+        "canadian_goose",
+        "greylag_goose",
+        "pink-footed_goose",
+        "white-faced_whistling_duck"
+    ],
+    "equal_length": true,
+    "seq_len": 270,
+    "num_nodes": 1345,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

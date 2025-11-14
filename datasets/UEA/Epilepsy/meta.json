@@ -1,0 +1,18 @@
+{
+    "name": "Epilepsy",
+    "num_classes": 4,
+    "class_names": [
+        "epilepsy",
+        "running",
+        "sawing",
+        "walking"
+    ],
+    "equal_length": true,
+    "seq_len": 206,
+    "num_nodes": 3,
+    "num_features": 1,
+    "shape": "[num_samples, seq_len, num_nodes, num_features]",
+    "missing": false,
+    "filling_missing": "NA",
+    "norm_each_channel": true
+}

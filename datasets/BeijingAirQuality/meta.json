@@ -1,0 +1,34 @@
+{
+    "name": "BeijingAirQuality",
+    "domain": "Beijing air quality",
+    "frequency (minutes)": 60,
+    "shape": [
+        36000,
+        7
+    ],
+    "timestamps_shape": [
+        36000,
+        2
+    ],
+    "timestamps_description": [
+        "time of day",
+        "day of week"
+    ],
+    "num_time_steps": 36000,
+    "num_vars": 7,
+    "has_graph": false,
+    "regular_settings": {
+        "train_val_test_ratio": [
+            0.6,
+            0.2,
+            0.2
+        ],
+        "norm_each_channel": true,
+        "rescale": false,
+        "metrics": [
+            "MAE",
+            "MSE"
+        ],
+        "null_val": NaN
+    }
+}

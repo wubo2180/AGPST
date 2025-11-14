@@ -1,0 +1,35 @@
+{
+    "name": "PEMS07",
+    "domain": "traffic flow",
+    "frequency (minutes)": 5,
+    "shape": [
+        28224,
+        883
+    ],
+    "timestamps_shape": [
+        28224,
+        2
+    ],
+    "timestamps_description": [
+        "time of day",
+        "day of week"
+    ],
+    "num_time_steps": 28224,
+    "num_vars": 883,
+    "has_graph": true,
+    "regular_settings": {
+        "train_val_test_ratio": [
+            0.6,
+            0.2,
+            0.2
+        ],
+        "norm_each_channel": false,
+        "rescale": true,
+        "metrics": [
+            "MAE",
+            "RMSE",
+            "MAPE"
+        ],
+        "null_val": 0.0
+    }
+}

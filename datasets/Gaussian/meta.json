@@ -1,0 +1,24 @@
+{
+    "name": "Gaussian",
+    "domain": "simulated Gaussian data",
+    "frequency (minutes)": null,
+    "shape": [
+        10000,
+        1
+    ],
+    "timestamps_shape": null,
+    "timestamps_description": null,
+    "num_time_steps": 10000,
+    "num_vars": 1,
+    "has_graph": false,
+    "regular_settings": {
+        "train_val_test_ratio": [
+            0.7,
+            0.1,
+            0.2
+        ],
+        "norm_each_channel": false,
+        "rescale": true,
+        "null_val": NaN
+    }
+}

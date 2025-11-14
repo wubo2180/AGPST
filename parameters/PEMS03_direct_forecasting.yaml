@@ -33,7 +33,7 @@ froward_features: [0]  # 长期历史数据特征索引
 target_features: [0]   # 短期历史和预测目标特征索引
 lr: 0.001  # 学习率（可以尝试0.001-0.01）
 evaluation_horizons: 12
-batch_size: 16
+batch_size: 32
 
 # Adaptive Graph 参数
 dim: 10  # 节点嵌入维度

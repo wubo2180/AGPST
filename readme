@@ -10,3 +10,4 @@ python main.py --lossType "mae" --pretrain_epochs 100 --finetune_epochs 1 --preT
 python main.py --lossType "mae" --pretrain_epochs 100 --finetune_epochs 1 --preTrainVal "false" --preTrain "true" --preTrain_batch_size 64 --batch_size 8 
 python main.py --lossType "mae" --pretrain_epochs 100 --finetune_epochs 100 --preTrainVal "false" --preTrain "false" --preTrain_batch_size 64 --batch_size 8 
 python stdmae/run.py --cfg='stdmae/STDMAE_PEMS03.py' --gpus='1' 
+ssh -p 48948 root@connect.bjb2.seetacloud.com
