@@ -1,25 +1,96 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from ..graphwavenet import GraphWaveNet
+from .graph_learning import AdaptiveGraphLearner, DynamicGraphConv
+
+
+class DenoiseAttention(nn.Module):
+    """
+    基于自注意力的去噪模块
+    对时间序列进行自注意力处理，降低噪声影响
+    """
+    def __init__(self, in_channels, hidden_dim, dropout=0.1):
+        super().__init__()
+        self.query = nn.Linear(in_channels, hidden_dim)
+        self.key = nn.Linear(in_channels, hidden_dim)
+        self.value = nn.Linear(in_channels, hidden_dim)
+        self.output = nn.Linear(hidden_dim, in_channels)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = hidden_dim ** -0.5
+        
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, N, C)
+        Returns:
+            denoised: (B, T, N, C)
+        """
+        B, T, N, C = x.shape
+        # 重塑为 (B*N, T, C) 以便在时间维度上应用注意力
+        x_flat = x.reshape(B * N, T, C)
+        
+        # 计算 Q, K, V
+        Q = self.query(x_flat)  # (B*N, T, H)
+        K = self.key(x_flat)    # (B*N, T, H)
+        V = self.value(x_flat)  # (B*N, T, H)
+        
+        # 注意力分数
+        attn = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (B*N, T, T)
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
+        
+        # 加权求和
+        out = torch.matmul(attn, V)  # (B*N, T, H)
+        out = self.output(out)  # (B*N, T, C)
+        
+        # 重塑回原始形状
+        out = out.reshape(B, T, N, C)
+        
+        return out
 
 
 class AGPSTModel(nn.Module):
     """
-    简化的AGPST模型 - 不使用patch embedding
+    AGPST模型 - 集成自适应图学习
     直接处理短期时间序列 (B, 12, N, 1)
     
     架构:
-    1. 简单的时间嵌入 (Linear)
-    2. 自适应图学习
-    3. 图卷积 + Transformer
+    0. 去噪模块 (可选)
+    1. 时间特征嵌入 (Linear)
+    2. 高级自适应图学习 (AdaptiveGraphLearner)
+    3. 动态图卷积 + Transformer
     4. GraphWaveNet预测
     """
     def __init__(self, num_nodes, dim, topK, in_channel, embed_dim, 
-                 num_heads, mlp_ratio, dropout, encoder_depth, backend_args):
+                 num_heads, mlp_ratio, dropout, encoder_depth, backend_args,
+                 use_denoising=True, denoise_type='conv',
+                 use_advanced_graph=True, graph_heads=4):
         super().__init__()
         self.num_nodes = num_nodes
         self.embed_dim = embed_dim
         self.seq_len = 12  # 固定的短期历史长度
+        self.use_denoising = use_denoising
+        self.denoise_type = denoise_type
+        self.use_advanced_graph = use_advanced_graph
+        
+        # 0. 去噪模块
+        if use_denoising:
+            if denoise_type == 'conv':
+                # 基于卷积的去噪：时间维度平滑
+                self.denoiser = nn.Sequential(
+                    # 1D卷积用于时间维度去噪
+                    nn.Conv1d(in_channel, 16, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(16),
+                    nn.ReLU(),
+                    nn.Conv1d(16, in_channel, kernel_size=3, padding=1),
+                    nn.Tanh()  # 输出范围 [-1, 1]，适合残差连接
+                )
+            elif denoise_type == 'attention':
+                # 基于注意力的去噪
+                self.denoiser = DenoiseAttention(in_channel, embed_dim // 4, dropout)
+            else:
+                raise ValueError(f"Unknown denoise_type: {denoise_type}")
         
         # 1. 时间特征嵌入 (替代patch embedding)
         # (B, N, T, C) -> (B, N, T, D)
@@ -33,14 +104,37 @@ class AGPSTModel(nn.Module):
         self.pos_embed = nn.Parameter(torch.randn(1, 1, self.seq_len, embed_dim))
         
         # 3. 自适应图学习
-        self.node_embeddings1 = nn.Parameter(torch.randn(num_nodes, dim))
-        self.node_embeddings2 = nn.Parameter(torch.randn(dim, num_nodes))
-        self.topK = topK
-        
-        # 4. 图卷积层
-        self.graph_conv = nn.ModuleList([
-            nn.Linear(embed_dim, embed_dim) for _ in range(2)
-        ])
+        if use_advanced_graph:
+            # 使用高级图学习模块
+            self.graph_learner = AdaptiveGraphLearner(
+                num_nodes=num_nodes,
+                node_dim=dim,
+                embed_dim=embed_dim,
+                graph_heads=graph_heads,
+                topk=topK,
+                dropout=dropout,
+                use_temporal_info=True
+            )
+            
+            # 动态图卷积
+            self.dynamic_graph_conv = DynamicGraphConv(
+                embed_dim=embed_dim,
+                num_nodes=num_nodes,
+                node_dim=dim,
+                graph_heads=graph_heads,
+                topk=topK,
+                dropout=dropout
+            )
+        else:
+            # 使用简单图学习（原版）
+            self.node_embeddings1 = nn.Parameter(torch.randn(num_nodes, dim))
+            self.node_embeddings2 = nn.Parameter(torch.randn(dim, num_nodes))
+            self.topK = topK
+            
+            # 4. 简单图卷积层
+            self.graph_conv = nn.ModuleList([
+                nn.Linear(embed_dim, embed_dim) for _ in range(2)
+            ])
         
         # 5. Transformer编码器
         encoder_layer = nn.TransformerEncoderLayer(
@@ -59,12 +153,16 @@ class AGPSTModel(nn.Module):
         self._init_weights()
         
     def _init_weights(self):
-        nn.init.xavier_uniform_(self.node_embeddings1)
-        nn.init.xavier_uniform_(self.node_embeddings2)
+        if not self.use_advanced_graph:
+            nn.init.xavier_uniform_(self.node_embeddings1)
+            nn.init.xavier_uniform_(self.node_embeddings2)
         nn.init.normal_(self.pos_embed, std=0.02)
         
     def learn_graph(self):
-        """学习自适应图结构"""
+        """学习自适应图结构（简单版本）"""
+        if self.use_advanced_graph:
+            raise NotImplementedError("Use graph_learner.forward() for advanced graph learning")
+        
         # 计算节点相似度
         adj = torch.mm(self.node_embeddings1, self.node_embeddings2)  # (N, N)
         adj = torch.relu(adj)
@@ -117,11 +215,32 @@ class AGPSTModel(nn.Module):
             prediction: (B, 12, N, 1) 预测结果
         """
         
-        # 使用短期历史数据
-        B, T, N, C = history_data.shape
+        # Step 0: 去噪（如果启用）
+        if self.use_denoising:
+            if self.denoise_type == 'conv':
+                # 卷积去噪：在时间维度上处理
+                B, T, N, C = history_data.shape
+                # 重塑为 (B*N, C, T) 以便使用Conv1d
+                x_denoise = history_data.permute(0, 2, 3, 1).reshape(B * N, C, T)
+                # 去噪
+                noise = self.denoiser(x_denoise)  # (B*N, C, T)
+                # 残差连接：原始数据 - 噪声
+                x_denoise = x_denoise - noise
+                # 重塑回 (B, T, N, C)
+                history_data_clean = x_denoise.reshape(B, N, C, T).permute(0, 3, 1, 2)
+            elif self.denoise_type == 'attention':
+                # 注意力去噪
+                history_data_clean = self.denoiser(history_data)  # (B, T, N, C)
+            else:
+                history_data_clean = history_data
+        else:
+            history_data_clean = history_data
+        
+        # 使用去噪后的数据
+        B, T, N, C = history_data_clean.shape
 
         # 转换格式: (B, T, N, C) -> (B, N, T, C)
-        x = history_data.permute(0, 2, 1, 3)  # (B, N, T, C)
+        x = history_data_clean.permute(0, 2, 1, 3)  # (B, N, T, C)
 
         # Step 1: 时间特征嵌入
         x = self.time_embedding(x)  # (B, N, T, D)
@@ -129,11 +248,23 @@ class AGPSTModel(nn.Module):
         # Step 2: 添加位置编码
         x = x + self.pos_embed  # (B, N, T, D)
         
-        # Step 3: 自适应图学习
-        adj = self.learn_graph()  # (N, N)
-        
-        # Step 4: 图卷积
-        x = self.graph_convolution(x, adj)  # (B, N, T, D)
+        # Step 3 & 4: 自适应图学习 + 图卷积
+        if self.use_advanced_graph:
+            # 使用高级图学习模块
+            # 准备输入：(B, N, T, D) -> (B, N, P, D)，这里P=T因为没有patch
+            patch_features = x  # (B, N, T, D)
+            
+            # 学习自适应图
+            learned_adjs, contrastive_loss = self.graph_learner(patch_features)  # (B, N, N), scalar
+            self.contrastive_loss = contrastive_loss
+            
+            # 动态图卷积
+            x, _, _ = self.dynamic_graph_conv(patch_features)  # (B, N, T, D)
+            x = F.relu(x)
+        else:
+            # 使用简单图学习（原版）
+            adj = self.learn_graph()  # (N, N)
+            x = self.graph_convolution(x, adj)  # (B, N, T, D)
         
         # Step 5: Transformer时序建模
         # (B, N, T, D) -> (B*N, T, D)

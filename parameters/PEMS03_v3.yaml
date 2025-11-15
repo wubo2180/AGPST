@@ -46,9 +46,15 @@ in_channel: 1
 froward_features: [0]
 target_features: [0]
 
+# Denoising module
+use_denoising: True  # Enable/disable denoising
+denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
+
 # Adaptive graph learning
-dim: 10
-topK: 10
+use_advanced_graph: True  # Use advanced multi-scale graph learning
+graph_heads: 4  # Number of graph attention heads (only for advanced graph)
+dim: 10  # Node embedding dimension
+topK: 10  # Top-K sparsification
 
 # Time embedding
 embed_dim: 96

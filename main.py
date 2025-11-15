@@ -7,27 +7,23 @@ import os
 import random
 import functools
 
+import torch
+import torch.optim as optim
+from torch.utils.data import  DataLoader
+from basicts.utils import load_adj, load_pkl
+
+from basicts.data import BasicTSForecastingDataset
+from basicts.mask.model import AGPSTModel
+from basicts.scaler import ZScoreScaler
+
+from basicts.metrics import masked_mae, masked_rmse, masked_mape
+metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 try:
     import swanlab
     SWANLAB_AVAILABLE = True
 except ImportError:
     SWANLAB_AVAILABLE = False
     print("Warning: swanlab not installed. Logging features will be disabled.")
-from scaler import ZScoreScaler
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torch.utils.data import  DataLoader
-from easytorch.utils.dist import master_only
-from basicts.utils import load_adj, load_pkl
-
-from basicts.data import BasicTSForecastingDataset
-from basicts.losses import sce_loss
-from basicts.mask.model import AGPSTModel
-# from basicts.metrics import masked_mae,masked_mape,masked_rmse
-from basicts.metrics import masked_mae, masked_rmse, masked_mape
-metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
-
 
 def collate_fn(batch):
     """
@@ -56,36 +52,6 @@ def collate_fn(batch):
         result['targets_timestamps'] = torch.from_numpy(targets_timestamps)
     
     return result
-
-
-# def select_input_features(data: torch.Tensor,forward_features) -> torch.Tensor:
-#     """Select input features.
-
-#     Args:
-#         data (torch.Tensor): input history data, shape [B, L, N, C]
-
-#     Returns:
-#         torch.Tensor: reshaped data
-#     """
-
-#     # select feature using self.forward_features
-#     if forward_features is not None:
-#         data = data[:, :, :, forward_features]
-#     return data
-
-# def select_target_features(data: torch.Tensor,target_features) -> torch.Tensor:
-#     """Select target feature.
-
-#     Args:
-#         data (torch.Tensor): prediction of the model with arbitrary shape.
-
-#     Returns:
-#         torch.Tensor: reshaped data with shape [B, L, N, C]
-#     """
-
-#     # select feature using self.target_features
-#     data = data[:, :, :, target_features]
-#     return data
 
 def metric_forward(metric_func, args):
     """Computing metrics.
@@ -130,10 +96,6 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
             
-            # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Val test mode: Only processing batch {idx+1}")
-                break
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
@@ -186,9 +148,6 @@ def test(test_data_loader, model, config, scaler, epoch, args):
             real_value.append(labels.detach().cpu())
             
             # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
@@ -243,17 +202,6 @@ def train(config, args):
 
     test_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
 
-    # train_dataset = BasicTSForecastingDataset(
-    #     dataset_name=config['dataset_name'],
-    #     input_len=config['input_len'],
-    #     output_len=config['output_len'],
-    #     mode='train',
-    #     use_timestamps=True,
-    #     local=config.get('local', True)
-    # )
-    # print(f'Train data shape: {train_dataset.data.shape}')
-    # dd
-    # Data loading - use correct file paths
     train_dataset = BasicTSForecastingDataset(
         dataset_name=config['dataset_name'],
         input_len=config['input_len'],
@@ -274,8 +222,7 @@ def train(config, args):
         output_len=config['output_len'],
         mode='test'
     )
-    # print(f'Train data shape: {train_dataset.data.shape}')
-    # Fit scaler on training data
+
     print('Fitting scaler on training data...')
     # Add channel dimension before fitting: (T, N) -> (T, N, 1)
     train_data = train_dataset.data
@@ -318,7 +265,11 @@ def train(config, args):
         mlp_ratio=config['mlp_ratio'],
         dropout=config['dropout'],
         encoder_depth=config['encoder_depth'],
-        backend_args=config['backend_args']
+        backend_args=config['backend_args'],
+        use_denoising=config.get('use_denoising', True),
+        denoise_type=config.get('denoise_type', 'conv'),
+        use_advanced_graph=config.get('use_advanced_graph', True),
+        graph_heads=config.get('graph_heads', 4)
     )
     model = model.to(args.device)
     
@@ -352,10 +303,7 @@ def train(config, args):
             # 前向传播
             preds = model(history_data)
             
-            # 输出格式验证（仅第一个epoch的第一个batch）
-            # if idx == 0 and epoch == 0:
-            #     print(f"  predictions (model output):    {preds.shape}    -> Expected: (B, 12, 358, 1)")
-            #     print("=" * 60)
+
             prediction_rescaled = train_scaler.inverse_transform(preds)
             # 反归一化
             real_value_rescaled = train_scaler.inverse_transform(labels)
@@ -384,10 +332,6 @@ def train(config, args):
             epoch_loss += loss.item()
             num_batches += 1
             
-            # 测试模式：只处理一个batch
-            if args.test_mode:
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
         
         # 计算平均损失
         avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
@@ -451,11 +395,7 @@ def main(config, args):
             mode=args.swanlab_mode,
         )
 
-    if args.mode == 'train':
-        train(config, args)
-    else:
-        print(f"Error: Unknown mode '{args.mode}'. Only 'train' mode is supported.")
-    
+
     if SWANLAB_AVAILABLE:
         swanlab.finish()
 
@@ -478,10 +418,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
     parser.add_argument('--config', default='./parameters/PEMS03_v3.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
-    parser.add_argument('--test_mode', default=0, type=int, help='test mode (1) or not (0)')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
-    parser.add_argument('--mode', default='train', type=str, help='training mode (only "train" supported)')
-    parser.add_argument('--device_ids', default=0, type=int, help='Number of GPUs available')
     
     args = parser.parse_args()
     
