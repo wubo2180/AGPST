@@ -80,7 +80,7 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation')):
+        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', disable=True if args.tqdm_mode == 'disabled' else False)):
             history_data = data["inputs"]
             future_data = data["targets"]
             history_data = scaler.transform(history_data)
@@ -133,7 +133,7 @@ def test(test_data_loader, model, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing')):
+        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', disable=True if args.tqdm_mode == 'disabled' else False)):
             history_data = data["inputs"]
             future_data = data["targets"]
             history_data = scaler.transform(history_data)
@@ -289,7 +289,7 @@ def train(config, args):
         epoch_contrastive_loss = 0.0
         num_batches = 0
         
-        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}')):
+        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', disable=True if args.tqdm_mode == 'disabled' else False)):
 
             history_data = data["inputs"]
             future_data = data["targets"]
@@ -394,7 +394,7 @@ def main(config, args):
             },
             mode=args.swanlab_mode,
         )
-
+    train(config, args)
 
     if SWANLAB_AVAILABLE:
         swanlab.finish()
@@ -416,9 +416,11 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/PEMS03_v3.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--config', default='./parameters/METR-LA.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
+    parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')
+    
     
     args = parser.parse_args()
     

@@ -67,7 +67,7 @@ use_advanced_graph: True
 graph_heads: 2  # 减少头数
 topK: 5         # 减少邻居
 ```
-
+ssh -p 20158 root@connect.bjb2.seetacloud.com
 ---
 
 ## 📖 详细文档
