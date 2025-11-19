@@ -3,435 +3,401 @@ import argparse
 import logging
 import numpy as np
 from tqdm import tqdm
-import functools
 import os
 import random
-import swanlab
+import functools
 
 import torch
-import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
-from torch.utils.data import Dataset, DataLoader
-from torch.nn.parallel import DataParallel
-
-from easytorch.utils.dist import master_only
-from basicts.stgcn_arch import STGCN
+from torch.utils.data import  DataLoader
 from basicts.utils import load_adj, load_pkl
-from basicts.data import TimeSeriesForecastingDataset
-from data import PretrainingDataset
-from data import ForecastingDataset
 
-from basicts.data.transform import maskTransforms
-from basicts.data import SCALER_REGISTRY
-from basicts.losses import sce_loss
-from basicts.mask.model import pretrain_model, finetune_model
-from basicts.metrics import masked_mae,masked_mape,masked_rmse
-from basicts.utils.utils import metric_forward, select_input_features, select_target_features
+from basicts.data import BasicTSForecastingDataset
+from basicts.mask.model import AGPSTModel
+from basicts.scaler import ZScoreScaler
 
-metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape, "SCE": sce_loss}
+from basicts.metrics import masked_mae, masked_rmse, masked_mape
+metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
+try:
+    import swanlab
+    SWANLAB_AVAILABLE = True
+except ImportError:
+    SWANLAB_AVAILABLE = False
+    print("Warning: swanlab not installed. Logging features will be disabled.")
+
+def collate_fn(batch):
+    """
+    Custom collate function to add channel dimension to data.
+    Converts (B, L, N) to (B, L, N, 1)
+    """
+    inputs = np.array([item['inputs'] for item in batch])
+    targets = np.array([item['targets'] for item in batch])
+    
+    # Add channel dimension if needed
+    if inputs.ndim == 3:  # (B, L, N)
+        inputs = inputs[..., np.newaxis]  # (B, L, N, 1)
+    if targets.ndim == 3:  # (B, L, N)
+        targets = targets[..., np.newaxis]  # (B, L, N, 1)
+    
+    result = {
+        'inputs': torch.from_numpy(inputs).float(),
+        'targets': torch.from_numpy(targets).float()
+    }
+    
+    # Handle timestamps if present
+    if 'inputs_timestamps' in batch[0]:
+        inputs_timestamps = np.array([item['inputs_timestamps'] for item in batch])
+        targets_timestamps = np.array([item['targets_timestamps'] for item in batch])
+        result['inputs_timestamps'] = torch.from_numpy(inputs_timestamps)
+        result['targets_timestamps'] = torch.from_numpy(targets_timestamps)
+    
+    return result
+
+def metric_forward(metric_func, args):
+    """Computing metrics.
+
+    Args:
+        metric_func (function, functools.partial): metric function.
+        args (list): arguments for metrics computation.
+    """
+
+    if isinstance(metric_func, functools.partial) and list(metric_func.keywords.keys()) == ["null_val"]:
+        # support partial(metric_func, null_val = something)
+        metric_item = metric_func(*args)
+    elif callable(metric_func):
+        # is a function
+        metric_item = metric_func(*args)
+    else:
+        raise TypeError("Unknown metric type: {0}".format(type(metric_func)))
+    return metric_item
 
 
-def val(val_data_loader, model, config, scaler, epoch):
+def validate(val_data_loader, model, config, scaler, epoch, args):
+    """验证模型"""
     model.eval()
     
     prediction = []
     real_value = []
+    
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(val_data_loader)):
-            future_data, history_data, long_history_data = data
-            batch_size = future_data.shape[0]
-            long_history_data = select_input_features(long_history_data, config['froward_features'])
-            history_data = select_input_features(history_data, config['target_features'])
-            future_data = select_input_features(future_data, config['target_features'])
+        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', disable=True if args.tqdm_mode == 'disabled' else False)):
+            history_data = data["inputs"]
+            future_data = data["targets"]
+            history_data = scaler.transform(history_data)
+            future_data = scaler.transform(future_data)
             
-            labels = future_data.to(config['device'])
-            history_data = history_data.to(config['device'])
-            long_history_data = long_history_data.to(config['device'])
-            
-            preds = model(history_data, long_history_data, future_data, batch_size, epoch)
 
-            prediction.append(preds.detach().cpu())        # preds = forward_return[0]
-            real_value.append(labels.detach().cpu())        # testy = forward_return[1]
             
-            # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Val test mode: Only processing batch {idx+1}")
-                break
+            labels = future_data.to(args.device)
+            history_data = history_data.to(args.device)
+            
+            preds = model(history_data)
 
+            prediction.append(preds.detach().cpu())
+            real_value.append(labels.detach().cpu())
+            
+        
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
-        # re-scale data
-        prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(prediction, **scaler["args"])
-        real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(real_value, **scaler["args"])
-        # print(real_value_rescaled)
-        # dd
+        
+        # 反归一化
+        prediction_rescaled = scaler.inverse_transform(prediction)
+        real_value_rescaled = scaler.inverse_transform(real_value)
+
+        # 计算指标
         metric_results = {}
         for metric_name, metric_func in metrics.items():
             metric_item = metric_forward(metric_func, [prediction_rescaled, real_value_rescaled])
             metric_results[metric_name] = metric_item.item()
         
-        swanlab.log({
-            "val/MAE": metric_results["MAE"],
-            "val/RMSE": metric_results["RMSE"],
-            "val/MAPE": metric_results["MAPE"]
-        })
+        val_loss = metric_results["MAE"]
         
-        print("Evaluate val data" + \
-                    "val MAE: {:.4f}, val RMSE: {:.4f}, val MAPE: {:.4f}".format(metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
-        logging.info("Evaluate val data" + \
-                    "val MAE: {:.4f}, val RMSE: {:.4f}, val MAPE: {:.4f}".format(metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
-def test(test_data_loader, model, config, scaler, epoch):
-    """Evaluate the model.
-
-    Args:
-        train_epoch (int, optional): current epoch if in training process.
-    """
-    model.eval()
-    # test loop
+        if SWANLAB_AVAILABLE:
+            swanlab.log({
+                "val/MAE": metric_results["MAE"],
+                "val/RMSE": metric_results["RMSE"],
+                "val/MAPE": metric_results["MAPE"]
+            }, step=epoch)
+        
+        print(f"Val MAE: {metric_results['MAE']:.4f}, Val RMSE: {metric_results['RMSE']:.4f}, Val MAPE: {metric_results['MAPE']:.4f}")
+        logging.info(f"Val MAE: {metric_results['MAE']:.4f}, Val RMSE: {metric_results['RMSE']:.4f}, Val MAPE: {metric_results['MAPE']:.4f}")
     
+    return val_loss
 
+
+def test(test_data_loader, model, config, scaler, epoch, args):
+    """测试模型"""
+    model.eval()
+    
     prediction = []
     real_value = []
+    
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(test_data_loader)):
-            future_data, history_data, long_history_data = data
-            batch_size = future_data.shape[0]
-            long_history_data = select_input_features(long_history_data, config['froward_features'])
-            history_data = select_input_features(history_data, config['target_features'])
-            future_data = select_input_features(future_data, config['target_features'])
+        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', disable=True if args.tqdm_mode == 'disabled' else False)):
+            history_data = data["inputs"]
+            future_data = data["targets"]
+            history_data = scaler.transform(history_data)
+            future_data = scaler.transform(future_data)
             
-            labels = future_data.to(config['device'])
-            history_data = history_data.to(config['device'])
-            long_history_data = long_history_data.to(config['device'])
-            
-            preds = model(history_data, long_history_data, future_data, batch_size, epoch)
-            
-            prediction.append(preds.detach().cpu())        # preds = forward_return[0]
-            real_value.append(labels.detach().cpu())        # testy = forward_return[1]s
+            labels = future_data.to(args.device)
+            history_data = history_data.to(args.device)
+
+            preds = model(history_data)
+
+            prediction.append(preds.detach().cpu())
+            real_value.append(labels.detach().cpu())
             
             # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
-
+        
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
-        # re-scale data
-        prediction = SCALER_REGISTRY.get(scaler["func"])(prediction, **scaler["args"])
-        real_value = SCALER_REGISTRY.get(scaler["func"])(real_value, **scaler["args"])
+        
+        # 反归一化
+        prediction = scaler.inverse_transform(prediction)
+        real_value = scaler.inverse_transform(real_value)
 
+        # 计算每个时间步的指标
         for i in range(config['evaluation_horizons']):
-            # For horizon i, only calculate the metrics **at that time** slice here.
             pred = prediction[:, i, :, :]
             real = real_value[:, i, :, :]
-
+            
             metric_results = {}
             for metric_name, metric_func in metrics.items():
                 metric_item = metric_forward(metric_func, [pred, real])
                 metric_results[metric_name] = metric_item.item()
-
-            print("Evaluate best model on test data for horizon " + \
-                "{:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}".format(i+1,metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
-            logging.info("Evaluate best model on test data for horizon " + \
-                "{:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}".format(i+1,metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
             
+            print(f"Horizon {i+1:2d} - MAE: {metric_results['MAE']:.4f}, RMSE: {metric_results['RMSE']:.4f}, MAPE: {metric_results['MAPE']:.4f}")
+            logging.info(f"Horizon {i+1:2d} - MAE: {metric_results['MAE']:.4f}, RMSE: {metric_results['RMSE']:.4f}, MAPE: {metric_results['MAPE']:.4f}")
+        
+        # 计算总体指标
         metric_results = {}
         for metric_name, metric_func in metrics.items():
             metric_item = metric_forward(metric_func, [prediction, real_value])
             metric_results[metric_name] = metric_item.item()
         
-        swanlab.log({
-            "test/MAE": metric_results["MAE"],
-            "test/RMSE": metric_results["RMSE"],
-            "test/MAPE": metric_results["MAPE"]
-        })
+        if SWANLAB_AVAILABLE:
+            swanlab.log({
+                "test/MAE": metric_results["MAE"],
+                "test/RMSE": metric_results["RMSE"],
+                "test/MAPE": metric_results["MAPE"]
+            }, step=epoch)
         
-        print("Evaluate val data" + \
-                    "val MAE: {:.4f}, val RMSE: {:.4f}, val MAPE: {:.4f}".format(metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
-        logging.info("Evaluate val data" + \
-                    "val MAE: {:.4f}, val RMSE: {:.4f}, val MAPE: {:.4f}".format(metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
+        print(f"Overall - Test MAE: {metric_results['MAE']:.4f}, Test RMSE: {metric_results['RMSE']:.4f}, Test MAPE: {metric_results['MAPE']:.4f}")
+        logging.info(f"Overall - Test MAE: {metric_results['MAE']:.4f}, Test RMSE: {metric_results['RMSE']:.4f}, Test MAPE: {metric_results['MAPE']:.4f}")
 
-def finetune(config, args):
-    print('### start finetune ... ###')
-    adj_mx, _ = load_adj(config['adj_dir'], "doubletransition")
 
+def train(config, args):
+    """
+    端到端训练，使用自适应图学习
+    """
+    print('### Start Training with Adaptive Graph ... ###')
+    adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
+    
     config['backend_args']['supports'] = [torch.tensor(i) for i in adj_mx]
-    scaler = load_pkl(config['scaler_dir'])
     
-    train_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'train',config['seq_len'])
-    val_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'valid',config['seq_len'])
-    test_dataset = ForecastingDataset(config['dataset_dir'],config['dataset_index_dir'],'test',config['seq_len'])
-    
-    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=True)
-    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
-    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers = 8, shuffle=False)
-    model = finetune_model(config['pre_trained_path'], config['mask_args'], config['backend_args'])
-    model = model.to(args.device)
-    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5,eps=1.0e-8)
-    
-    for epoch in range(config['finetune_epochs']):
-        print('============ epoch {:d} ============'.format(epoch))
-        for idx, data in enumerate(tqdm(train_data_loader)):
+    # Initialize scaler
+    train_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
 
-            future_data, history_data, long_history_data = data
-            batch_size = future_data.shape[0]
-            long_history_data = select_input_features(long_history_data, config['froward_features'])
-            history_data = select_input_features(history_data, config['target_features'])
-            future_data = select_input_features(future_data, config['target_features'])
-            
+    val_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
+
+    test_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
+
+    train_dataset = BasicTSForecastingDataset(
+        dataset_name=config['dataset_name'],
+        input_len=config['input_len'],
+        output_len=config['output_len'],
+        mode='train'
+    )
+    
+    val_dataset = BasicTSForecastingDataset(
+        dataset_name=config['dataset_name'],
+        input_len=config['input_len'],
+        output_len=config['output_len'],
+        mode='val'
+    )
+    
+    test_dataset = BasicTSForecastingDataset(
+        dataset_name=config['dataset_name'],
+        input_len=config['input_len'],
+        output_len=config['output_len'],
+        mode='test'
+    )
+
+    print('Fitting scaler on training data...')
+    # Add channel dimension before fitting: (T, N) -> (T, N, 1)
+    train_data = train_dataset.data
+    if train_data.ndim == 2:
+        train_data = train_data[..., np.newaxis]
+    train_scaler.fit(train_data)
+    print(f'Train scaler - Mean shape: {train_scaler.stats["mean"].shape}, Std shape: {train_scaler.stats["std"].shape}')
+    print(f'Train scaler - Mean: {train_scaler.stats["mean"].mean().item():.4f}, Std: {train_scaler.stats["std"].mean().item():.4f}')
+    
+    # Fit scaler on validation data
+    print('Fitting scaler on validation data...')
+    val_data = val_dataset.data
+    if val_data.ndim == 2:
+        val_data = val_data[..., np.newaxis]
+    val_scaler.fit(val_data)
+    print(f'Val scaler - Mean shape: {val_scaler.stats["mean"].shape}, Std shape: {val_scaler.stats["std"].shape}')
+    print(f'Val scaler - Mean: {val_scaler.stats["mean"].mean().item():.4f}, Std: {val_scaler.stats["std"].mean().item():.4f}')
+    
+    # Fit scaler on test data
+    print('Fitting scaler on test data...')
+    test_data = test_dataset.data
+    if test_data.ndim == 2:
+        test_data = test_data[..., np.newaxis]
+    test_scaler.fit(test_data)
+    print(f'Test scaler - Mean shape: {test_scaler.stats["mean"].shape}, Std shape: {test_scaler.stats["std"].shape}')
+    print(f'Test scaler - Mean: {test_scaler.stats["mean"].mean().item():.4f}, Std: {test_scaler.stats["std"].mean().item():.4f}')
+    
+    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=True, pin_memory=True, collate_fn=collate_fn)
+    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
+    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
+    
+    # 创建模型
+    model = AGPSTModel(
+        num_nodes=config['num_nodes'],
+        dim=config['dim'],
+        topK=config['topK'],
+        in_channel=config['in_channel'],
+        embed_dim=config['embed_dim'],
+        num_heads=config['num_heads'],
+        mlp_ratio=config['mlp_ratio'],
+        dropout=config['dropout'],
+        encoder_depth=config['encoder_depth'],
+        backend_args=config['backend_args'],
+        use_denoising=config.get('use_denoising', True),
+        denoise_type=config.get('denoise_type', 'conv'),
+        use_advanced_graph=config.get('use_advanced_graph', True),
+        graph_heads=config.get('graph_heads', 4)
+    )
+    model = model.to(args.device)
+    
+    # 优化器
+    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
+    
+    # 学习率调度器
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    
+    best_val_loss = float('inf')
+    
+    for epoch in range(config['epochs']):
+        print(f'============ Epoch {epoch}/{config["epochs"]} ============')
+        model.train()
+        
+        epoch_loss = 0.0
+        epoch_contrastive_loss = 0.0
+        num_batches = 0
+        
+        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', disable=True if args.tqdm_mode == 'disabled' else False)):
+
+            history_data = data["inputs"]
+            future_data = data["targets"]
+            # print(f"Original history_data shape: {history_data.shape}, future_data shape: {future_data.shape}")
+            history_data = train_scaler.transform(history_data)
+            future_data = train_scaler.transform(future_data)
+
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
-            long_history_data = long_history_data.to(args.device)
-
-            preds = model(history_data, long_history_data, future_data, batch_size, epoch)
-
-            prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(preds, **scaler["args"])
-            real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(labels, **scaler["args"])
+            # print(f"history_data shape: {history_data.shape}, labels shape: {labels.shape}")
+            # 前向传播
+            preds = model(history_data)
             
-            # 主损失
+
+            prediction_rescaled = train_scaler.inverse_transform(preds)
+            # 反归一化
+            real_value_rescaled = train_scaler.inverse_transform(labels)
+            
+            # 计算主损失
+            # loss = masked_mae(prediction_rescaled, real_value_rescaled)
             loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
             
             # 添加对比学习损失（如果存在）
-            if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-                contrastive_weight = config.get('contrastive_weight', 0.1)  # 从配置文件读取权重
-                if isinstance(model.contrastive_loss, torch.Tensor):
-                    loss = loss + contrastive_weight * model.contrastive_loss
-            
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            
-            # 测试模式：只处理一个batch
-            if args.test_mode:
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
-            
-        # 记录损失
-        log_dict = {"finetune/train_loss": loss.item()}
-        if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-            if isinstance(model.contrastive_loss, torch.Tensor):
-                log_dict["finetune/contrastive_loss"] = model.contrastive_loss.item()
-        swanlab.log(log_dict, step=epoch)
-        
-        print('============ val and test ============')
-        # val(val_data_loader, model, config, scaler, epoch)
-        test(test_data_loader, model, config, scaler, epoch)
-        
-@torch.no_grad()
-@master_only
-def preTrain_test(data_loader, model, scaler, mode='val'):
-    """Evaluate the model.
-
-    Args:
-        train_epoch (int, optional): current epoch if in training process.
-    """
-    model.eval()
-    
-    prediction = []
-    real_value = []
-    MAE, RMSE, MAPE = 0.0, 0.0, 0.0
-    with torch.no_grad():
-        for idx, data in enumerate(tqdm(data_loader)):
-            future_data, history_data = data
-            
-            history_data = select_input_features(history_data, config['froward_features'])
-            history_data = history_data.to(config['device'])
-            reconstruction_masked_tokens, label_masked_tokens, _ = model(history_data, 0)
-
-            prediction = reconstruction_masked_tokens.detach().cpu()
-            real_value = label_masked_tokens.detach().cpu()
-            prediction_rescaled = SCALER_REGISTRY.get(scaler["func"])(prediction, **scaler["args"])
-            real_value_rescaled = SCALER_REGISTRY.get(scaler["func"])(real_value, **scaler["args"])
-            
-            metric_results = {}
-            for metric_name, metric_func in metrics.items():
-                metric_item = metric_forward(metric_func, [prediction_rescaled, real_value_rescaled])
-                metric_results[metric_name] = metric_item.item()
-            metric_1, metric_2, metric_3 = metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]
-            MAE += metric_1
-            RMSE += metric_2
-            MAPE += metric_3
-            
-            # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
-        MAE = MAE / (idx + 1)
-        RMSE = RMSE / (idx + 1)
-        MAPE = MAPE / (idx + 1)
-        print("Evaluate {} data MAE: {:.4f},  RMSE: {:.4f},  MAPE: {:.4f}".format(mode, metric_results["MAE"], metric_results["RMSE"], metric_results["MAPE"]))
-
-def pretrain(config, args):
-    print('### start pre-training ... ###')
-    adj_mx, _ = load_adj(config['adj_dir'], "doubletransition")
-    scaler = load_pkl(config['preTrain_scaler_dir'])
-    preTrain_train_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'train', config['device'])
-    preTrain_val_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'valid', config['device'])
-    preTrain_test_dataset = PretrainingDataset(config['preTrain_dataset_dir'], config['preTrain_dataset_index_dir'],'test', config['device'])
-
-
-    # 自适应设置数据加载参数
-    use_cuda = torch.cuda.is_available() and args.device == 'cuda'
-    pin_memory = use_cuda
-    cpu_count = os.cpu_count() or 4  # 处理None的情况
-    num_workers = 8
-    
-    train_data_loader = DataLoader(preTrain_train_dataset, 
-                                  batch_size=config['preTrain_batch_size'], 
-                                  num_workers=num_workers, 
-                                  shuffle=True, 
-                                  pin_memory=pin_memory, 
-                                  persistent_workers=True if num_workers > 0 else False,
-                                  prefetch_factor=4 if num_workers > 0 else None)
-    val_data_loader = DataLoader(preTrain_val_dataset, 
-                                batch_size=config['preTrain_batch_size'], 
-                                num_workers=num_workers//2, 
-                                shuffle=False, 
-                                pin_memory=pin_memory, 
-                                persistent_workers=True if num_workers > 0 else False,
-                                prefetch_factor=2 if num_workers > 0 else None)
-    test_data_loader = DataLoader(preTrain_test_dataset, 
-                                 batch_size=config['preTrain_batch_size'], 
-                                 num_workers=num_workers//2, 
-                                 shuffle=False, 
-                                 pin_memory=pin_memory, 
-                                 persistent_workers=True if num_workers > 0 else False,
-                                 prefetch_factor=2 if num_workers > 0 else None)
-
-    model = pretrain_model(config['num_nodes'], config['dim'],
-                           config['topK'], config['adaptive'],
-                           config['pretrain_epochs'], config['patch_size'],
-                           config['in_channel'], config['embed_dim'], 
-                           config['num_heads'], config['graph_heads'], 
-                           config['mlp_ratio'], config['dropout'],
-                           config['mask_ratio'], config['encoder_depth'],
-                           config['decoder_depth'])
-    device_ids = list(range(torch.cuda.device_count()))
-    # if device_ids:
-    #     model = DataParallel(model, device_ids=device_ids).to(device_ids[0]) 
-    # else:
-    model = model.to(args.device)
-    
-    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
-    if args.lossType == 'mae':
-        lossType = masked_mae
-    elif args.lossType == 'sce':
-        lossType = sce_loss
-    print("config['pretrain_epochs']:", config['pretrain_epochs'])
-    
-    # 预分配变量以减少重复创建
-    loss_accumulator = 0.0
-    batch_count = 0
-    
-    for epoch in range(config['pretrain_epochs']):
-        print('============ epoch {:d} ============'.format(epoch))
-        model.train()  # 确保训练模式
-        loss_accumulator = 0.0
-        batch_count = 0
-        
-        for idx, data in enumerate(tqdm(train_data_loader)):
-            future_data, history_data = data
-            
-            history_data = select_input_features(history_data, config['froward_features'])
-            history_data = history_data.to(args.device, non_blocking=True)
-
-            # 获取模型输出
-            model_output = model(history_data, epoch)
-            
-            # 处理返回值（可能是2个或3个值）
-            if len(model_output) == 3:
-                reconstruction_masked_tokens, label_masked_tokens, contrastive_loss = model_output
-            else:
-                reconstruction_masked_tokens, label_masked_tokens = model_output
-                contrastive_loss = None
-
-            # 主损失（重构损失）
-            loss = metric_forward(lossType, [reconstruction_masked_tokens, label_masked_tokens])
-            
-            # 添加对比学习损失（如果存在）
             total_loss = loss
-            if contrastive_loss is not None:
+            if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
                 contrastive_weight = config.get('contrastive_weight', 0.1)
-                if isinstance(contrastive_loss, torch.Tensor):
-                    total_loss = loss + contrastive_weight * contrastive_loss
+                if isinstance(model.contrastive_loss, torch.Tensor):
+                    total_loss = loss + contrastive_weight * model.contrastive_loss
+                    epoch_contrastive_loss += model.contrastive_loss.item()
             
+            # 反向传播
             optimizer.zero_grad()
             total_loss.backward()
             
-            # 梯度裁剪防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            # 梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             
             optimizer.step()
             
-            # 累积损失，减少.item()调用频率
-            loss_accumulator += total_loss.detach()
-            batch_count += 1
+            epoch_loss += loss.item()
+            num_batches += 1
             
-            # 测试模式：只处理一个batch
-            if config.get('test_mode', False):
-                print(f"Test mode: Only processing batch {idx+1}")
-                break
         
-        # epoch结束时计算平均损失
-        if batch_count > 0:
-            if isinstance(loss_accumulator, torch.Tensor):
-                avg_loss = (loss_accumulator / batch_count).item()
-            else:
-                avg_loss = loss_accumulator / batch_count
-        else:
-            avg_loss = 0.0
-        print(f"preTrain loss: {avg_loss:.6f}")
+        # 计算平均损失
+        avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
+        avg_contrastive = epoch_contrastive_loss / num_batches if num_batches > 0 else 0.0
         
-        # 记录预训练损失
-        log_dict = {"pretrain/loss": avg_loss}
-        # 如果有对比学习损失，也记录下来（使用最后一个batch的值作为示例）
-        if contrastive_loss is not None and isinstance(contrastive_loss, torch.Tensor):
-            log_dict["pretrain/contrastive_loss"] = contrastive_loss.item()
-        swanlab.log(log_dict, step=epoch)
+        print(f"Epoch {epoch} - Train Loss: {avg_loss:.6f}, Contrastive Loss: {avg_contrastive:.6f}")
         
-        if config["save_model"]:
-            print("Saving Model ...")
-            pre_trained_path = config["model_save_path"] + "checkpoint_" + str(epoch) + ".pt"
-            state_dict = model.module.state_dict() if hasattr(model, 'module') else model.state_dict()
-            torch.save(state_dict, pre_trained_path)
-        config['pre_trained_path'] = pre_trained_path
-        # finetune(config, args)
-
-    return model
+        # 记录到SwanLab
+        log_dict = {
+            "train/loss": avg_loss,
+            "train/lr": optimizer.param_groups[0]['lr']
+        }
+        if avg_contrastive > 0:
+            log_dict["train/contrastive_loss"] = avg_contrastive
+        if SWANLAB_AVAILABLE:
+            swanlab.log(log_dict, step=epoch)
+        
+        # 验证
+        print('============ Validation ============')
+        val_loss = validate(val_data_loader, model, config, val_scaler, epoch, args)
+        
+        # 学习率调度
+        scheduler.step(val_loss)
+        
+        # 保存最佳模型
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            if config.get("save_model", False):
+                model_save_path = config.get("model_save_path", "checkpoints/")
+                os.makedirs(model_save_path, exist_ok=True)
+                best_model_path = os.path.join(model_save_path, "best_model.pt")
+                torch.save(model.state_dict(), best_model_path)
+                print(f"✅ Best model saved with val loss: {val_loss:.6f}")
+        
+        # 测试
+        print('============ Test ============')
+        test(test_data_loader, model, config, test_scaler, epoch, args)
+    
+    print(f"\n🎉 Training completed! Best validation loss: {best_val_loss:.6f}")
 
 
 def main(config, args):
-    swanlab.init(
-        project="AGPST-TrafficForecasting",
-        experiment_name=f"{config['dataset_name']}_patch{config['patch_size']}_mask{config['mask_ratio']}",
-        config={
-            "dataset": config['dataset_name'],
-            "num_nodes": config['num_nodes'],
-            "patch_size": config['patch_size'],
-            "mask_ratio": config['mask_ratio'],
-            "embed_dim": config['embed_dim'],
-            "encoder_depth": config['encoder_depth'],
-            "decoder_depth": config['decoder_depth'],
-            "pretrain_epochs": config['pretrain_epochs'],
-            "finetune_epochs": config['finetune_epochs'],
-            "preTrain_batch_size": config['preTrain_batch_size'],
-            "batch_size": config['batch_size'],
-            "learning_rate": config['lr'],
-            "topK": config['topK'],
-            "adaptive": config['adaptive'],
-        },
-        mode=args.swanlab_mode,
-    )
+    # 设置实验名称
+    experiment_name = f"{config['dataset_name']}_AGPST_topK{config['topK']}"
+    
+    if SWANLAB_AVAILABLE:
+        swanlab.init(
+            project="AGPST-forecasting",
+            experiment_name=experiment_name,
+            config={
+                "mode": "train",
+                "dataset": config['dataset_name'],
+                "num_nodes": config['num_nodes'],
+                "embed_dim": config['embed_dim'],
+                "encoder_depth": config['encoder_depth'],
+                "epochs": config.get('epochs', config.get('finetune_epochs', 100)),
+                "batch_size": config['batch_size'],
+                "learning_rate": config['lr'],
+                "topK": config['topK'],
+            },
+            mode=args.swanlab_mode,
+        )
+    train(config, args)
 
-    if args.mode == 'pretrain':
-        model = pretrain(config, args)
-        model = model.cpu()
-    elif args.mode == 'forecasting':
-        finetune(config, args)
-    else:
-        print("mode error")
-    swanlab.finish()
+    if SWANLAB_AVAILABLE:
+        swanlab.finish()
 
 
 
@@ -450,14 +416,11 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/PEMS03_v2.yaml', type=str, help='Path to the YAML config file')
-    parser.add_argument('--device', default='cuda', type=str, help='device')
-    parser.add_argument('--lossType', default='mae', type=str, help='pre-training loss type and default is mae. {mae, sce}')
-    parser.add_argument('--test_mode', default=0, type=int, help='test or not')
-    parser.add_argument('--swanlab_mode', default='online', type=str, help='swanlab mode online or disabled')
-    parser.add_argument('--mode', default='forecasting', type=str, help='pretrain or forecasting')
-    # parser.add_argument('--preTrainVal', default="true", type=str, help='pre-training validate or not')
-    parser.add_argument('--device_ids', default=0, type=int, help='Number of GPUs available')
+    parser.add_argument('--config', default='./parameters/PEMS08.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--device', default='cpu', type=str, help='device')
+    parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
+    parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')
+    
     
     args = parser.parse_args()
     

@@ -1,62 +1,98 @@
-# ============ general ============ #
+# ============================================================================
+# AGPST Direct Forecasting Configuration
+# Dataset: PEMS03
+# Model: Simplified AGPST (No Patch Embedding)
+# ============================================================================
 
-description: 'STGCN model configuration'
-model_name: 'STGCN'
-dataset_name : "METR-LA"
-dataset_type : "Traffic speed"
-dataset_input_len : 12
-dataset_output_len : 12
-gpu_num : 1
-device: ''
-preTrain_dataset_dir: 'datasets/METR-LA/data_in864_out864.pkl'
-preTrain_dataset_index_dir: 'datasets/METR-LA/index_in864_out864.pkl'
-preTrain_scaler_dir: 'datasets/METR-LA/scaler_in864_out864.pkl'
-dataset_dir: 'datasets/METR-LA/data_in12_out12.pkl'
-dataset_index_dir: 'datasets/METR-LA/index_in12_out12.pkl'
-scaler_dir: 'datasets/METR-LA/scaler_in12_out12.pkl'
-adj_dir: "datasets/METR-LA/adj_mx.pkl"
-model_save_path: 'checkpoints/METR-LA/'
-finetune_epochs: 1
-pretrain_epochs: 1
-n_vertex: 207
-# mask_ratio: 0.5
-froward_features: [0]
-target_features: [0]
-lr: 0.002
-momentum: 0.9
-metrics: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
-Ks: 3
-Kt: 3
-blocks: [[3], [64, 16, 64], [64, 16, 64], [128, 128], [12]]
-T: 12
-act_func: 'glu'
-graph_conv_type: 'graph_conv'
-gso: ''
-bias: True
-droprate: 0.5
-evaluation_horizons : 12
+# --------------------- Basic Information ---------------------
+description: 'Direct Forecasting with Adaptive Graph Learning'
+model_name: 'AGPST'
+dataset_name: "METR-LA"
+dataset_type: "Traffic speed"
+mode: train
+
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
+
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/METR-LA/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 207
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
+
+# --------------------- Training Configuration ---------------------
+epochs: 100
 batch_size: 32
-dim: 10
-topK: 3
-patch_size: 12
-in_channel: 3
-embed_dim: 96
-num_heads: 4
-mlp_ratio: 4
-dropout: 0.1
-mask_ratio: 0.25
-encoder_depth: 4
-decoder_depth: 1
-# ============ train ============ #
+lr: 0.001
+evaluation_horizons: 12
+
+# Gradient clipping
 train:
     clip_grad_param:
         max_norm: 5.0
-    num_epochs: 100
-  
-    epochs: 100
-    null_val : 0.0
+    null_val: 0.0
 
+# --------------------- Model Architecture ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
 
+# Denoising module
+use_denoising: True  # Enable/disable denoising
+denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
 
+# Adaptive graph learning
+use_advanced_graph: True  # Use advanced multi-scale graph learning
+graph_heads: 4  # Number of graph attention heads (only for advanced graph)
+dim: 10  # Node embedding dimension
+topK: 10  # Top-K sparsification
 
+# Time embedding
+embed_dim: 96
+dropout: 0.1
+
+# Transformer encoder
+encoder_depth: 4
+num_heads: 4
+mlp_ratio: 4
+
+# GraphWaveNet backend
+backend_args:
+    num_nodes: 207
+    supports: ''
+    dropout: 0.3
+    gcn_bool: True
+    addaptadj: True
+    aptinit: null
+    in_dim: 1
+    out_dim: 12
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 256
+    end_channels: 512
+    kernel_size: 2
+    blocks: 4
+    layers: 2
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/METR-LA/'
+
+# --------------------- Logging Configuration ---------------------
+test_mode: False
+swanlab_mode: 'online'
 

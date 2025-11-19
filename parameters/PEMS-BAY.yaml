@@ -1,99 +1,98 @@
-# ============ general ============ #
-GENERAL:
-    DESCRIPTION: 'STGCN model configuration'
-    MODEL_NAME: 'STGCN'
-    DATASET_NAME : "PEMS-BAY"
-    DATASET_TYPE : "Traffic speed"
-    DATASET_INPUT_LEN : 12
-    DATASET_OUTPUT_LEN : 12
-    GPU_NUM : 1
-    DEVICE: ''
-    DATASET_DIR: 'datasets/PEMS-BAY/data_in12_out12.pkl'
-    DATASET_INDEX_DIR: 'datasets/PEMS-BAY/index_in12_out12.pkl'
-    SCALER_DIR: 'datasets/PEMS-BAY/scaler_in12_out12.pkl'
-    ADJ_DIR: "datasets/PEMS-BAY/adj_mx.pkl"
-    MODEL_SAVE_PATH: 'checkpoints/METR-LA/'
-# ============ optim ============ #
-# PEMS-BAY METR-LA PEMS04 PEMS08 PEMS03
-OPTIM:
-    LR: 0.002
-    MOMENTUM: 0.9
-    ADAPT_LR: 0.01
-    META_LR: 0.001
-METRICS: {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
+# ============================================================================
+# AGPST Direct Forecasting Configuration
+# Dataset: PEMS03
+# Model: Simplified AGPST (No Patch Embedding)
+# ============================================================================
 
-# ============ META  ============ #
-META:
-    SUPPORT_SET_SIZE: 100
-    QUERY_SET_SIZE: 100
-    NUM_SAMPLED_EDGES: 1000
-    UPDATE_SAPCE_STEP: 1
-# # ============ environment ============ #
-# ENV:
-#     ENV : EasyDict()
-#     ENV.SEED : 1
-#     ENV.CUDNN : EasyDict()
-#     ENV.CUDNN.ENABLED : True
-# ============ model ============ #
-MODEL:
-    STGCN:
-        Ks: 3
-        Kt: 3
-        blocks: [[3], [64, 16, 64], [64, 16, 64], [128, 128], [12]]
-        T: 12
-        n_vertex: 207
-        act_func: 'glu'
-        graph_conv_type: 'cheb_graph_conv'
-        gso: ''
-        bias: True
-        droprate: 0.5
-    FROWARD_FEATURES: [0]
-    TARGET_FEATURES: [0]
-# ============ train ============ #
-TRAIN:
-    CLIP_GRAD_PARAM:
+# --------------------- Basic Information ---------------------
+description: 'Direct Forecasting with Adaptive Graph Learning'
+model_name: 'AGPST'
+dataset_name: "PEMS-BAY"
+dataset_type: "Traffic speed"
+mode: train
+
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
+
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/PEMS-BAY/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 325
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
+
+# --------------------- Training Configuration ---------------------
+epochs: 100
+batch_size: 32
+lr: 0.001
+evaluation_horizons: 12
+
+# Gradient clipping
+train:
+    clip_grad_param:
         max_norm: 5.0
-    NUM_EPOCHS: 100
-  
-    EPOCHS: 100
-    NULL_VAL : 0.0
-# read data
-    DATA_DIR : "datasets/METR-LA"
-# dataloader args, optional
-    DATA_BATCH_SIZE : 32
-    DATA_PREFETCH : False
-    DATA_SHUFFLE : True
-    DATA_NUM_WORKERS : 2
-    DATA_PIN_MEMORY : False
+    null_val: 0.0
 
-# ============ validate ============ #
-VAL:
-    INTERVAL : 1
-# validating data
-    DATA : EasyDict()
-# read data
-    DATA_DIR : "datasets/PEMS-BAY"
-# dataloader args, optional
-    DATA_BATCH_SIZE : 32
-    DATA_PREFETCH : False
-    DATA_SHUFFLE : False
-    DATA_NUM_WORKERS : 2
-    DATA_PIN_MEMORY : False
+# --------------------- Model Architecture ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
 
-# ============ test ============ #
-TEST:
-    
-    INTERVAL : 1
-# test data
-    
-# read data
-    DATA_DIR : "datasets/PEMS-BAY"
-# dataloader args, optional
-    DATA_BATCH_SIZE : 32
-    DATA_PREFETCH : False
-    DATA_SHUFFLE : False
-    DATA_NUM_WORKERS : 2
-    DATA_PIN_MEMORY : False
-    EVALUATION_HORIZONS : 12
+# Denoising module
+use_denoising: True  # Enable/disable denoising
+denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
 
+# Adaptive graph learning
+use_advanced_graph: True  # Use advanced multi-scale graph learning
+graph_heads: 4  # Number of graph attention heads (only for advanced graph)
+dim: 10  # Node embedding dimension
+topK: 10  # Top-K sparsification
+
+# Time embedding
+embed_dim: 96
+dropout: 0.1
+
+# Transformer encoder
+encoder_depth: 4
+num_heads: 4
+mlp_ratio: 4
+
+# GraphWaveNet backend
+backend_args:
+    num_nodes: 325
+    supports: ''
+    dropout: 0.3
+    gcn_bool: True
+    addaptadj: True
+    aptinit: null
+    in_dim: 1
+    out_dim: 12
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 256
+    end_channels: 512
+    kernel_size: 2
+    blocks: 4
+    layers: 2
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/PEMS-BAY/'
+
+# --------------------- Logging Configuration ---------------------
+test_mode: False
+swanlab_mode: 'online'
 

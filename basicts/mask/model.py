@@ -1,246 +1,294 @@
-import os
-import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from basicts.data import SCALER_REGISTRY
-from easytorch.utils.dist import master_only
-from timm.models.vision_transformer import trunc_normal_
-from .patch import PatchEmbedding
-from .maskgenerator import MaskGenerator
-from .positional_encoding import PositionalEncoding
-from .transformer_layers import TransformerLayers
 from ..graphwavenet import GraphWaveNet
-from .post_patch_adaptive_graph import PostPatchDynamicGraphConv
+from .graph_learning import AdaptiveGraphLearner, DynamicGraphConv
 
 
-class pretrain_model(nn.Module):
-    def __init__(self,num_nodes, 
-                 dim, topK, 
-                 adaptive, 
-                 epochs, patch_size, 
-                 in_channel, embed_dim, 
-                 num_heads, graph_heads, mlp_ratio, 
-                 dropout,  mask_ratio, 
-                 encoder_depth, decoder_depth, mode="pre-train") -> None:
+class DenoiseAttention(nn.Module):
+    """
+    基于自注意力的去噪模块
+    对时间序列进行自注意力处理，降低噪声影响
+    """
+    def __init__(self, in_channels, hidden_dim, dropout=0.1):
         super().__init__()
-        assert topK < num_nodes
-        self.adaptive = adaptive
-
-        self.lamda = 0.8
-        self.epochs = epochs
-        self.embed_dim = embed_dim
-        self.patch_size = patch_size
-        self.topK = topK
-        self.mask_ratio = mask_ratio
-        self.selected_feature = 0
-        self.mode = mode
+        self.query = nn.Linear(in_channels, hidden_dim)
+        self.key = nn.Linear(in_channels, hidden_dim)
+        self.value = nn.Linear(in_channels, hidden_dim)
+        self.output = nn.Linear(hidden_dim, in_channels)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = hidden_dim ** -0.5
         
-        self.nodevec1 = nn.Parameter(torch.randn(num_nodes, dim), requires_grad=True)
-        self.nodevec2 = nn.Parameter(torch.randn(dim, num_nodes), requires_grad=True)
-        self.encoder_norm = nn.LayerNorm(embed_dim)
-        self.decoder_norm = nn.LayerNorm(embed_dim)
-        self.pos_mat = None
+    def forward(self, x):
+        """
+        Args:
+            x: (B, T, N, C)
+        Returns:
+            denoised: (B, T, N, C)
+        """
+        B, T, N, C = x.shape
+        # 重塑为 (B*N, T, C) 以便在时间维度上应用注意力
+        x_flat = x.reshape(B * N, T, C)
         
-        self.patch_embedding = PatchEmbedding(patch_size, in_channel, embed_dim, 
-                                              norm_layer=None)
-        self.positional_encoding = PositionalEncoding(num_feat=embed_dim)
-        self.dynamic_graph_conv = PostPatchDynamicGraphConv(
-            embed_dim=embed_dim,
-            num_nodes=num_nodes, 
-            node_dim=dim,
-            graph_heads=graph_heads,
-            topk=topK,
-            dropout=dropout
-        )
-
-        # self.GNN_encoder = nn.Sequential(GIN_layer(nn.Linear(embed_dim, 10)),
-        #                                 GIN_layer(nn.Linear(10, embed_dim)))
+        # 计算 Q, K, V
+        Q = self.query(x_flat)  # (B*N, T, H)
+        K = self.key(x_flat)    # (B*N, T, H)
+        V = self.value(x_flat)  # (B*N, T, H)
         
-        self.encoder = TransformerLayers(embed_dim, encoder_depth, mlp_ratio, num_heads, dropout)
-
-        self.enc_2_dec_emb = nn.Linear(embed_dim, embed_dim, bias=True)
-        self.mask_token = nn.Parameter(torch.zeros(1, 1, 1, embed_dim))
-
-        self.decoder = TransformerLayers(embed_dim, decoder_depth, mlp_ratio, num_heads, dropout)
-        # self.GNN_decoder = nn.Sequential(GIN_layer(nn.Linear(embed_dim, 10)),
-        #                                 GIN_layer(nn.Linear(10, embed_dim)))
-
-        self.output_layer = nn.Linear(embed_dim, patch_size)
-        self.initialize_weights()
-
-    def initialize_weights(self):
-        trunc_normal_(self.mask_token, std=.02)
-
-    def encoding(self, long_term_history, epoch, mask=True):
-        long_term_history = long_term_history.transpose(1, 2)
+        # 注意力分数
+        attn = torch.matmul(Q, K.transpose(-2, -1)) * self.scale  # (B*N, T, T)
+        attn = torch.softmax(attn, dim=-1)
+        attn = self.dropout(attn)
         
-        # B, L, N, C
-        if mask:
-            batch_size, num_nodes, num_time, C = long_term_history.shape
-            
-            patches = self.patch_embedding(long_term_history)  # 输出: (B, N, P, d)
-            
-            # 🎯 动态图学习 (直接兼容 (B, N, P, D) 格式)
-            graph_output = self.dynamic_graph_conv(patches)
-            if len(graph_output) == 3:
-                patches, learned_adj, contrastive_loss = graph_output
-                self.contrastive_loss = contrastive_loss
-            else:
-                patches, learned_adj = graph_output
-                self.contrastive_loss = None
-            
-            # 位置编码
-            patches, self.pos_mat = self.positional_encoding(patches)
- 
-            if self.adaptive:
-                mask_ratio = self.mask_ratio * math.pow(epoch+1 / self.epochs, self.lamda)
-            else:
-                mask_ratio = self.mask_ratio
-                
-            Maskg = MaskGenerator(patches.shape[2], mask_ratio)
-            unmasked_token_index, masked_token_index = Maskg.uniform_rand()
-            
-            encoder_input = patches[:, :, unmasked_token_index, :]
-            
-            hidden_states_unmasked = self.encoder(encoder_input)
-            
-            hidden_states_unmasked = self.encoder_norm(hidden_states_unmasked).view(batch_size, num_nodes, -1, self.embed_dim)
-        else:
-            # 推理模式 (不使用mask)
-            batch_size, num_nodes, num_time, C = long_term_history.shape
-            
-            patches = self.patch_embedding(long_term_history)  # (B, N, P, d)
+        # 加权求和
+        out = torch.matmul(attn, V)  # (B*N, T, H)
+        out = self.output(out)  # (B*N, T, C)
+        
+        # 重塑回原始形状
+        out = out.reshape(B, T, N, C)
+        
+        return out
 
-            # 🎯 动态图学习 (直接兼容 (B, N, P, D) 格式)
-            graph_output = self.dynamic_graph_conv(patches)
-            if len(graph_output) == 3:
-                patches, learned_adj, contrastive_loss = graph_output
-                self.contrastive_loss = contrastive_loss
-            else:
-                patches, learned_adj = graph_output
-                self.contrastive_loss = None
-            
-            # 位置编码
-            patches, self.pos_mat = self.positional_encoding(patches)
-            
-            unmasked_token_index, masked_token_index = None, None
-            encoder_input = patches
-            hidden_states_unmasked = self.encoder(encoder_input)
-            hidden_states_unmasked = self.encoder_norm(hidden_states_unmasked).view(batch_size, num_nodes, -1, self.embed_dim)
-        return hidden_states_unmasked, unmasked_token_index, masked_token_index
+
+class AGPSTModel(nn.Module):
+    """
+    AGPST模型 - 集成自适应图学习
+    直接处理短期时间序列 (B, 12, N, 1)
     
-    def decoding(self, hidden_states_unmasked, masked_token_index):
-        batch_size, num_nodes, num_time, _ = hidden_states_unmasked.shape
-        
-        if masked_token_index is not None:
-            # 训练模式 - 处理masked tokens
-            unmasked_token_index = [i for i in range(0, len(masked_token_index)+num_time) if i not in masked_token_index]
-            
-            # 确保pos_mat不为None
-            if self.pos_mat is not None:
-                hidden_states_masked = self.pos_mat[:, :, masked_token_index, :]
-                hidden_states_masked += self.mask_token.expand(batch_size, num_nodes, len(masked_token_index), hidden_states_unmasked.shape[-1])
-                hidden_states_unmasked += self.pos_mat[:, :, unmasked_token_index, :]
-                hidden_states_full = torch.cat([hidden_states_unmasked, hidden_states_masked], dim=-2)
-            else:
-                # 如果pos_mat为None，直接使用unmasked states
-                hidden_states_full = hidden_states_unmasked
-        else:
-            # 推理模式 - 直接使用所有states
-            hidden_states_full = hidden_states_unmasked
-        
-        hidden_states_full = self.decoder(hidden_states_full)
-        hidden_states_full = self.decoder_norm(hidden_states_full)
-
-        reconstruction_full = self.output_layer(hidden_states_full.view(batch_size, num_nodes, -1, self.embed_dim))
-
-        return reconstruction_full
-    def get_reconstructed_masked_tokens(self, reconstruction_full, real_value_full, unmasked_token_index,
-                                        masked_token_index):
-        """Get reconstructed masked tokens and corresponding ground-truth for subsequent loss computing.
-
-        Args:
-            reconstruction_full (torch.Tensor): reconstructed full tokens.
-            real_value_full (torch.Tensor): ground truth full tokens.
-            unmasked_token_index (list): unmasked token index.
-            masked_token_index (list): masked token index.
-
-        Returns:
-            torch.Tensor: reconstructed masked tokens.
-            torch.Tensor: ground truth masked tokens.
-        """
-        batch_size, num_nodes, num_time, _ = reconstruction_full.shape
-        reconstruction_masked_tokens = reconstruction_full[:, :, len(unmasked_token_index):, :]
-        reconstruction_masked_tokens = reconstruction_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)
-        label_full = real_value_full.permute(0, 3, 1, 2).unfold(1, self.patch_size, self.patch_size)[:, :, :, self.selected_feature, :].transpose(1, 2)
-        label_masked_tokens = label_full[:, :, masked_token_index, :].contiguous()
-        label_masked_tokens = label_masked_tokens.view(batch_size, num_nodes, -1).transpose(1, 2)
-
-        return reconstruction_masked_tokens, label_masked_tokens
-        
-    def forward(self, history_data: torch.Tensor, epoch):
-        if self.mode == "pre-train":
-            hidden_states_unmasked, unmasked_token_index, masked_token_index = self.encoding(history_data, epoch)
-            reconstruction_full = self.decoding(hidden_states_unmasked, masked_token_index)
-            
-            # 确保unmasked_token_index不为None才进行重建
-            if unmasked_token_index is not None and masked_token_index is not None:
-                reconstruction_masked_tokens, label_masked_tokens = self.get_reconstructed_masked_tokens(
-                    reconstruction_full, history_data.permute(0, 2, 3, 1), 
-                    unmasked_token_index, masked_token_index
-                )
-                # 返回重建结果和对比学习损失
-                contrastive_loss = getattr(self, 'contrastive_loss', None)
-                return reconstruction_masked_tokens, label_masked_tokens, contrastive_loss
-            else:
-                # 如果没有mask，返回完整重建
-                contrastive_loss = getattr(self, 'contrastive_loss', None)
-                return reconstruction_full, history_data.permute(0, 2, 3, 1), contrastive_loss
-        else:
-            hidden_states_full, _, _ = self.encoding(history_data, epoch, mask=False)
-            return hidden_states_full
-    def get_mask_ratio(self):
-        print(self.mask_ratio)
-
-
-class finetune_model(nn.Module):
-
-    def __init__(self, pre_trained_path, mask_args, backend_args):
+    架构:
+    0. 去噪模块 (可选)
+    1. 时间特征嵌入 (Linear)
+    2. 高级自适应图学习 (AdaptiveGraphLearner)
+    3. 动态图卷积 + Transformer
+    4. GraphWaveNet预测
+    """
+    def __init__(self, num_nodes, dim, topK, in_channel, embed_dim, 
+                 num_heads, mlp_ratio, dropout, encoder_depth, backend_args,
+                 use_denoising=True, denoise_type='conv',
+                 use_advanced_graph=True, graph_heads=4):
         super().__init__()
-        self.pre_trained_path = pre_trained_path
-        self.pretrain_model = pretrain_model(**mask_args)
-        self.backend = GraphWaveNet(**backend_args)
-        if pre_trained_path and os.path.exists(pre_trained_path):
-            self.load_pre_trained_model()
-        else:
-            print(f"Warning: Pre-trained model path '{pre_trained_path}' not found. Using random initialization.")
-
-    def load_pre_trained_model(self):
-        """Load pre-trained model with compatibility for both single-scale and multi-scale checkpoints"""
-        # checkpoint_dict = torch.load(self.pre_trained_path)
-        state_dict = torch.load(self.pre_trained_path, map_location='cpu')  # or 'cuda:0'
-        self.pretrain_model.load_state_dict(state_dict)
-        print("Pre-trained model loaded successfully")
-
-    def forward(self, history_data: torch.Tensor, long_history_data: torch.Tensor, future_data: torch.Tensor, batch_seen: int, epoch: int, **kwargs) -> torch.Tensor:
-        """Feed forward of STDMAE.
-
-        Args:
-            history_data (torch.Tensor): Short-term historical data. shape: [B, L, N, 3]
-            long_history_data (torch.Tensor): Long-term historical data. shape: [B, L * P, N, 3]
-
-        Returns:
-            torch.Tensor: prediction with shape [B, N, L].
-        """
-        short_term_history = history_data
-        batch_size, _, num_nodes, _ = history_data.shape
-        hidden_states = self.pretrain_model(long_history_data, epoch)
-        out_len = 1
-        hidden_states = hidden_states[:, :, -out_len, :]
-        y_hat = self.backend(short_term_history, hidden_states=hidden_states).transpose(1, 2).unsqueeze(-1)
-
-        # 传递对比学习损失给调用者
-        self.contrastive_loss = getattr(self.pretrain_model, 'contrastive_loss', None)
+        self.num_nodes = num_nodes
+        self.embed_dim = embed_dim
+        self.seq_len = 12  # 固定的短期历史长度
+        self.use_denoising = use_denoising
+        self.denoise_type = denoise_type
+        self.use_advanced_graph = use_advanced_graph
         
-        return y_hat
+        # 0. 去噪模块
+        if use_denoising:
+            if denoise_type == 'conv':
+                # 基于卷积的去噪：时间维度平滑
+                self.denoiser = nn.Sequential(
+                    # 1D卷积用于时间维度去噪
+                    nn.Conv1d(in_channel, 16, kernel_size=3, padding=1),
+                    nn.BatchNorm1d(16),
+                    nn.ReLU(),
+                    nn.Conv1d(16, in_channel, kernel_size=3, padding=1),
+                    nn.Tanh()  # 输出范围 [-1, 1]，适合残差连接
+                )
+            elif denoise_type == 'attention':
+                # 基于注意力的去噪
+                self.denoiser = DenoiseAttention(in_channel, embed_dim // 4, dropout)
+            else:
+                raise ValueError(f"Unknown denoise_type: {denoise_type}")
+        
+        # 1. 时间特征嵌入 (替代patch embedding)
+        # (B, N, T, C) -> (B, N, T, D)
+        self.time_embedding = nn.Sequential(
+            nn.Linear(in_channel, embed_dim // 2),
+            nn.ReLU(),
+            nn.Linear(embed_dim // 2, embed_dim)
+        )
+        
+        # 2. 位置编码
+        self.pos_embed = nn.Parameter(torch.randn(1, 1, self.seq_len, embed_dim))
+        
+        # 3. 自适应图学习
+        if use_advanced_graph:
+            # 使用高级图学习模块
+            self.graph_learner = AdaptiveGraphLearner(
+                num_nodes=num_nodes,
+                node_dim=dim,
+                embed_dim=embed_dim,
+                graph_heads=graph_heads,
+                topk=topK,
+                dropout=dropout,
+                use_temporal_info=True
+            )
+            
+            # 动态图卷积
+            self.dynamic_graph_conv = DynamicGraphConv(
+                embed_dim=embed_dim,
+                num_nodes=num_nodes,
+                node_dim=dim,
+                graph_heads=graph_heads,
+                topk=topK,
+                dropout=dropout
+            )
+        else:
+            # 使用简单图学习（原版）
+            self.node_embeddings1 = nn.Parameter(torch.randn(num_nodes, dim))
+            self.node_embeddings2 = nn.Parameter(torch.randn(dim, num_nodes))
+            self.topK = topK
+            
+            # 4. 简单图卷积层
+            self.graph_conv = nn.ModuleList([
+                nn.Linear(embed_dim, embed_dim) for _ in range(2)
+            ])
+        
+        # 5. Transformer编码器
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * mlp_ratio,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=encoder_depth)
+        
+        # 6. 后端预测
+        self.backend = GraphWaveNet(**backend_args)
+        
+        self.contrastive_loss = None
+        self._init_weights()
+        
+    def _init_weights(self):
+        if not self.use_advanced_graph:
+            nn.init.xavier_uniform_(self.node_embeddings1)
+            nn.init.xavier_uniform_(self.node_embeddings2)
+        nn.init.normal_(self.pos_embed, std=0.02)
+        
+    def learn_graph(self):
+        """学习自适应图结构（简单版本）"""
+        if self.use_advanced_graph:
+            raise NotImplementedError("Use graph_learner.forward() for advanced graph learning")
+        
+        # 计算节点相似度
+        adj = torch.mm(self.node_embeddings1, self.node_embeddings2)  # (N, N)
+        adj = torch.relu(adj)
+        
+        # Top-K稀疏化
+        if self.topK < self.num_nodes:
+            topk_values, topk_indices = torch.topk(adj, self.topK, dim=1)
+            mask = torch.zeros_like(adj)
+            mask.scatter_(1, topk_indices, 1)
+            adj = adj * mask
+        
+        # 归一化
+        adj = adj / (adj.sum(1, keepdim=True) + 1e-8)
+        
+        return adj
+        
+    def graph_convolution(self, x, adj):
+        """
+        图卷积
+        Args:
+            x: (B, N, T, D)
+            adj: (N, N)
+        Returns:
+            x: (B, N, T, D)
+        """
+        B, N, T, D = x.shape
+        
+        for conv in self.graph_conv:
+            # 对每个时间步做图卷积
+            out = []
+            for t in range(T):
+                xt = x[:, :, t, :]  # (B, N, D)
+                # 特征变换
+                h = conv(xt)  # (B, N, D)
+                # 图聚合
+                h = torch.matmul(adj.t().unsqueeze(0), h)  # (1, N, N) @ (B, N, D) -> (B, N, D)
+                out.append(h)
+            x = torch.stack(out, dim=2)  # (B, N, T, D)
+            x = torch.relu(x)
+        
+        return x
+        
+    def forward(self, history_data):
+        """
+        Args:
+            history_data: (B, 12, N, 1) 短期历史
+            long_history_data: 不使用（保持接口兼容）
+            
+        Returns:
+            prediction: (B, 12, N, 1) 预测结果
+        """
+        
+        # Step 0: 去噪（如果启用）
+        if self.use_denoising:
+            if self.denoise_type == 'conv':
+                # 卷积去噪：在时间维度上处理
+                B, T, N, C = history_data.shape
+                # 重塑为 (B*N, C, T) 以便使用Conv1d
+                x_denoise = history_data.permute(0, 2, 3, 1).reshape(B * N, C, T)
+                # 去噪
+                noise = self.denoiser(x_denoise)  # (B*N, C, T)
+                # 残差连接：原始数据 - 噪声
+                x_denoise = x_denoise - noise
+                # 重塑回 (B, T, N, C)
+                history_data_clean = x_denoise.reshape(B, N, C, T).permute(0, 3, 1, 2)
+            elif self.denoise_type == 'attention':
+                # 注意力去噪
+                history_data_clean = self.denoiser(history_data)  # (B, T, N, C)
+            else:
+                history_data_clean = history_data
+        else:
+            history_data_clean = history_data
+        
+        # 使用去噪后的数据
+        B, T, N, C = history_data_clean.shape
+
+        # 转换格式: (B, T, N, C) -> (B, N, T, C)
+        x = history_data_clean.permute(0, 2, 1, 3)  # (B, N, T, C)
+
+        # Step 1: 时间特征嵌入
+        x = self.time_embedding(x)  # (B, N, T, D)
+        
+        # Step 2: 添加位置编码
+        x = x + self.pos_embed  # (B, N, T, D)
+        
+        # Step 3 & 4: 自适应图学习 + 图卷积
+        if self.use_advanced_graph:
+            # 使用高级图学习模块
+            # 准备输入：(B, N, T, D) -> (B, N, P, D)，这里P=T因为没有patch
+            patch_features = x  # (B, N, T, D)
+            
+            # 学习自适应图
+            learned_adjs, contrastive_loss = self.graph_learner(patch_features)  # (B, N, N), scalar
+            self.contrastive_loss = contrastive_loss
+            
+            # 动态图卷积
+            x, _, _ = self.dynamic_graph_conv(patch_features)  # (B, N, T, D)
+            x = F.relu(x)
+        else:
+            # 使用简单图学习（原版）
+            adj = self.learn_graph()  # (N, N)
+            x = self.graph_convolution(x, adj)  # (B, N, T, D)
+        
+        # Step 5: Transformer时序建模
+        # (B, N, T, D) -> (B*N, T, D)
+        BN, T, D = B * N, x.size(2), x.size(3)
+        x_flat = x.reshape(BN, T, D)
+        x_flat = self.transformer(x_flat)  # (B*N, T, D)
+        x = x_flat.reshape(B, N, T, D)  # (B, N, T, D)
+        
+        # Step 6: 准备 GraphWaveNet 的输入
+        # GraphWaveNet 需要:
+        #   - input: (B, L, N, C) 原始历史数据
+        #   - hidden_states: (B, N, d) Transformer最后一个时间步的输出
+        
+        # 提取 hidden_states: 使用最后一个时间步的输出 (B, N, D)
+        hidden_states = x[:, :, -1, :]  # (B, N, 96)
+        
+        # Step 7: GraphWaveNet 预测
+        # 输入原始历史数据 (B, T, N, C) 和 Transformer 特征
+        prediction = self.backend(history_data, hidden_states)  # (B, N, 12)
+        
+        # 转换输出格式: (B, N, 12) -> (B, 12, N, 1)
+        prediction = prediction.permute(0, 2, 1).unsqueeze(-1)  # (B, 12, N, 1)
+        
+        return prediction
+
+
+ForecastingWithAdaptiveGraph = AGPSTModel
