@@ -5,8 +5,16 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 plt.rcParams['font.sans-serif'] = ['SimHei']
-
-
+plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams.update({
+    'font.size': 24,
+    'axes.titlesize': 24,
+    'axes.labelsize': 20,
+    'legend.fontsize': 20,
+    'xtick.labelsize': 16,
+    'ytick.labelsize': 18,
+    'font.family': 'Times New Roman'
+})
 def load_dataset(dataset_name='PEMS03', mode='train'):
     """加载数据集"""
     data_path = f'datasets/{dataset_name}/{mode}_data.npy'
