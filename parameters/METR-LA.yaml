@@ -21,7 +21,6 @@ adj_dir: 'datasets/METR-LA/adj_mx.pkl'
 input_len: 12
 output_len: 12
 num_nodes: 207
-n_vertex: 207
 use_timestamps: False
 norm_each_channel: True
 rescale: False

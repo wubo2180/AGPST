@@ -21,7 +21,6 @@ adj_dir: 'datasets/PEMS04/adj_mx.pkl'
 input_len: 12
 output_len: 12
 num_nodes: 307
-n_vertex: 307
 use_timestamps: False
 norm_each_channel: True
 rescale: False

@@ -416,7 +416,7 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/METR-LA.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--config', default='./parameters/PEMS08.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
     parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')
