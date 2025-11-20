@@ -30,7 +30,7 @@ local: True
 # --------------------- Training Configuration ---------------------
 epochs: 100
 batch_size: 64      # ⭐ 增大批次以稳定梯度
-lr: 0.0003          # ⭐ 降低学习率 (Encoder-Decoder 需要更小lr)
+lr: 0.001          # ⭐ 降低学习率 (Encoder-Decoder 需要更小lr)
 evaluation_horizons: 12
 
 # Gradient clipping
