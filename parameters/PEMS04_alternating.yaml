@@ -1,13 +1,13 @@
 # ============================================================================
 # AGPST Alternating Spatio-Temporal Architecture Configuration
-# Dataset: PEMS03
+# Dataset: PEMS04
 # Model: AlternatingSTModel (Revolutionary Architecture!)
 # ============================================================================
 
 # --------------------- Basic Information ---------------------
 description: 'Alternating Spatio-Temporal Encoding-Decoding Architecture'
 model_name: 'AlternatingSTModel'
-dataset_name: "PEMS03"
+dataset_name: "PEMS04"
 dataset_type: "Traffic speed"
 mode: train
 
@@ -17,10 +17,10 @@ gpu_num: 1
 
 # --------------------- Dataset Configuration ---------------------
 dataset_dir: 'datasets/'
-adj_dir: 'datasets/PEMS03/adj_mx.pkl'
+adj_dir: 'datasets/PEMS04/adj_mx.pkl'
 input_len: 12
 output_len: 12
-num_nodes: 358
+num_nodes: 307
 use_timestamps: False
 norm_each_channel: True
 rescale: False
@@ -93,8 +93,8 @@ val_interval: 1         # Validate every epoch
 save_best_only: True    # Save only the best model
 
 # ============ Output ============
-checkpoints_dir: 'checkpoints/PEMS03_AlternatingST/'
-log_dir: 'logs/PEMS03_AlternatingST/'
+checkpoints_dir: 'checkpoints/PEMS04_AlternatingST/'
+log_dir: 'logs/PEMS04_AlternatingST/'
 
 # ============ Loss Function ============
 loss:

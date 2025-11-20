@@ -1,0 +1,143 @@
+# ============================================================================
+# Alternating Spatio-Temporal Architecture Configuration
+# Dataset: PEMS-BAY (325 nodes)
+# Model: AlternatingSTModel
+# Architecture: Temporal Encoder → Spatial Encoder → Fusion → ST Decoder (×2 stages)
+# ============================================================================
+
+# --------------------- Basic Information ---------------------
+description: 'Alternating Spatio-Temporal Model for Traffic Forecasting'
+model_name: 'AlternatingSTModel'
+dataset_name: "PEMS-BAY"
+dataset_type: "Traffic speed"
+mode: train
+
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
+
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/PEMS-BAY/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 325  # PEMS-BAY has 325 nodes
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
+
+# --------------------- Training Configuration ---------------------
+epochs: 100
+batch_size: 32
+lr: 0.001
+evaluation_horizons: 12
+
+# Gradient clipping
+train:
+    clip_grad_param:
+        max_norm: 5.0
+    null_val: 0.0
+
+# --------------------- Alternating ST Architecture ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
+
+# Core architecture parameters
+embed_dim: 96  # Feature dimension
+dropout: 0.1
+num_heads: 4
+mlp_ratio: 4
+
+# Stage 1: First temporal-spatial encoding
+temporal_depth_1: 2  # Depth of first temporal encoder
+spatial_depth_1: 2   # Depth of first spatial encoder
+
+# Decoder: Decodes fused features back to temporal/spatial components
+decoder_depth: 2
+num_decoder_queries: 24  # 12 (temporal) + 12 (spatial)
+
+# Stage 2: Second temporal-spatial encoding
+temporal_depth_2: 2  # Depth of second temporal encoder
+spatial_depth_2: 2   # Depth of second spatial encoder
+
+# Fusion mechanism
+fusion_type: 'gated'  # Options: 'gated', 'concat', 'cross_attn'
+# 'gated': Learnable gates α·temporal + (1-α)·spatial (default, more stable)
+# 'concat': Simple concatenation + projection (faster but less expressive)
+# 'cross_attn': Cross-attention between temporal and spatial (most powerful but slower)
+
+# Advanced features
+use_positional_encoding: True  # Add positional encoding
+use_layer_norm: True  # Use layer normalization
+
+# --------------------- Adaptive Graph Learning ---------------------
+# These parameters are used for spatial encoding
+use_advanced_graph: True
+graph_heads: 4
+dim: 10  # Node embedding dimension
+topK: 10  # Top-K sparsification for graph
+
+# --------------------- GraphWaveNet Backend ---------------------
+# Keep for compatibility, but alternating architecture doesn't use GraphWaveNet
+backend_args:
+    num_nodes: 325
+    supports: ''
+    dropout: 0.3
+    gcn_bool: True
+    addaptadj: True
+    aptinit: null
+    in_dim: 1
+    out_dim: 12
+    residual_channels: 32
+    dilation_channels: 32
+    skip_channels: 256
+    end_channels: 512
+    kernel_size: 2
+    blocks: 4
+    layers: 2
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Optimization ---------------------
+# Mixed precision training (optional, can speed up training by 30-50%)
+use_amp: False  # Set to True to enable automatic mixed precision
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/PEMS-BAY_AlternatingST/'
+
+# --------------------- Logging Configuration ---------------------
+test_mode: False
+swanlab_mode: 'online'
+log_dir: 'logs/PEMS-BAY_AlternatingST/'
+
+# --------------------- Architecture Summary ---------------------
+# Input: (B, N=325, T=12, D=1)
+# 
+# Stage 1:
+#   TemporalEncoder1: (B, N, T, D) → (B, N, T, embed_dim=96)
+#   SpatialEncoder1:  (B, N, T, D) → (B, N, T, embed_dim=96)
+#   FusionLayer1:     Fuses temporal & spatial features
+#
+# STDecoder:
+#   Decodes fused features to temporal and spatial components
+#   Temporal queries: (B, N, T, embed_dim)
+#   Spatial queries:  (B, N, T, embed_dim)
+#
+# Stage 2:
+#   TemporalEncoder2: Processes temporal queries
+#   SpatialEncoder2:  Processes spatial queries
+#   FusionLayer2:     Final fusion
+#
+# Output Head: Projects to (B, N, output_len=12, out_dim=1)
+#
+# Total Parameters: ~1.23M (4.68 MB)
+# ============================================================================
