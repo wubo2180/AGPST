@@ -46,7 +46,7 @@ froward_features: [0]
 target_features: [0]
 
 # Denoising module
-use_denoising: False  # Enable/disable denoising
+use_denoising: True   # ⭐ 启用去噪模块
 denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
 
 # Adaptive graph learning
@@ -57,7 +57,7 @@ topK: 10  # Top-K sparsification
 
 # Time embedding
 embed_dim: 96
-dropout: 0.1
+dropout: 0.05  # ⭐ 降低 dropout，允许模型学习更多
 
 # Transformer encoder
 encoder_depth: 4

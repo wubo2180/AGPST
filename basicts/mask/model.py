@@ -1,7 +1,28 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math
 from .graph_learning import DynamicGraphConv
+
+
+def get_sinusoidal_encoding(seq_len, d_model):
+    """
+    生成固定的 sin/cos 位置编码 (Transformer 原始论文)
+    Args:
+        seq_len: 序列长度
+        d_model: 模型维度
+    Returns:
+        pos_encoding: (1, 1, seq_len, d_model)
+    """
+    position = torch.arange(seq_len, dtype=torch.float).unsqueeze(1)
+    div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * 
+                        -(math.log(10000.0) / d_model))
+    
+    pos_encoding = torch.zeros(seq_len, d_model)
+    pos_encoding[:, 0::2] = torch.sin(position * div_term)
+    pos_encoding[:, 1::2] = torch.cos(position * div_term)
+    
+    return pos_encoding.unsqueeze(0).unsqueeze(0)  # (1, 1, seq_len, d_model)
 
 
 class DenoiseAttention(nn.Module):
@@ -108,8 +129,9 @@ class AGPSTModel(nn.Module):
             nn.Linear(embed_dim // 2, embed_dim)
         )
         
-        # 2. 位置编码 (编码器)
-        self.encoder_pos_embed = nn.Parameter(torch.randn(1, 1, self.seq_len, embed_dim))
+        # 2. 位置编码 (编码器) - 使用固定的 sin/cos 编码
+        self.register_buffer('encoder_pos_embed', 
+                           get_sinusoidal_encoding(self.seq_len, embed_dim))
         
         # 3. 自适应图学习
         if use_advanced_graph:
@@ -147,8 +169,9 @@ class AGPSTModel(nn.Module):
         # 5. 可学习的未来查询向量 (代表未来 pred_len 个时间步)
         self.future_queries = nn.Parameter(torch.randn(1, pred_len, embed_dim))
         
-        # 6. 位置编码 (解码器)
-        self.decoder_pos_embed = nn.Parameter(torch.randn(1, 1, pred_len, embed_dim))
+        # 6. 位置编码 (解码器) - 使用固定的 sin/cos 编码
+        self.register_buffer('decoder_pos_embed',
+                           get_sinusoidal_encoding(self.pred_len, embed_dim))
         
         # 7. Transformer 解码器
         decoder_layer = nn.TransformerDecoderLayer(
@@ -179,9 +202,8 @@ class AGPSTModel(nn.Module):
         if not self.use_advanced_graph:
             nn.init.xavier_uniform_(self.node_embeddings1)
             nn.init.xavier_uniform_(self.node_embeddings2)
-        nn.init.normal_(self.encoder_pos_embed, std=0.02)
-        nn.init.normal_(self.decoder_pos_embed, std=0.02)
-        # 未来查询使用更大的初始化范围
+        # 位置编码已经是固定的 sin/cos，不需要初始化
+        # 未来查询使用 Xavier 初始化
         nn.init.xavier_normal_(self.future_queries)
         
     def learn_graph(self):
@@ -301,8 +323,9 @@ class AGPSTModel(nn.Module):
         queries = self.future_queries.expand(B * N, -1, -1)  # (B*N, pred_len, D)
         
         # Step 6: 添加位置编码 (解码器)
-        # decoder_pos_embed: (1, 1, pred_len, D) -> (B*N, pred_len, D)
-        queries = queries + self.decoder_pos_embed.squeeze(1)  # (B*N, pred_len, D)
+        # decoder_pos_embed: (1, 1, pred_len, D) -> (pred_len, D) -> (B*N, pred_len, D)
+        decoder_pos = self.decoder_pos_embed.squeeze(0).squeeze(0)  # (pred_len, D)
+        queries = queries + decoder_pos.unsqueeze(0)  # (B*N, pred_len, D)
         
         # Step 7: Transformer 解码器 (交叉注意力)
         # 准备编码器输出作为 memory: (B, N, T, D) -> (B*N, T, D)
