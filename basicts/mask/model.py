@@ -51,21 +51,26 @@ class DenoiseAttention(nn.Module):
 
 class AGPSTModel(nn.Module):
     """
-    AGPST模型 - 集成自适应图学习
-    直接处理短期时间序列 (B, 12, N, 1)
+    AGPST模型 - Encoder-Decoder 架构
+    集成自适应图学习和时空去噪
     
     架构:
-    0. 去噪模块 (可选)
-    1. 时间特征嵌入 (Linear)
-    2. 高级自适应图学习 (AdaptiveGraphLearner)
-    3. 动态图卷积 + Transformer
-    4. MLP 预测头
+    Encoder:
+        0. 去噪模块 (可选)
+        1. 时间特征嵌入
+        2. 自适应图学习 + 动态图卷积
+        3. Transformer 编码器
+    
+    Decoder:
+        4. 可学习的未来查询向量
+        5. Transformer 解码器 (交叉注意力)
+        6. 输出投影层
     """
     def __init__(self, num_nodes, dim, topK, in_channel, embed_dim, 
                  num_heads, mlp_ratio, dropout, encoder_depth,
                  use_denoising=True, denoise_type='conv',
                  use_advanced_graph=True, graph_heads=4,
-                 pred_len=12):
+                 pred_len=12, decoder_depth=2):
         super().__init__()
         self.num_nodes = num_nodes
         self.embed_dim = embed_dim
@@ -74,6 +79,8 @@ class AGPSTModel(nn.Module):
         self.use_denoising = use_denoising
         self.denoise_type = denoise_type
         self.use_advanced_graph = use_advanced_graph
+        
+        # ============ Encoder 部分 ============
         
         # 0. 去噪模块
         if use_denoising:
@@ -93,7 +100,7 @@ class AGPSTModel(nn.Module):
             else:
                 raise ValueError(f"Unknown denoise_type: {denoise_type}")
         
-        # 1. 时间特征嵌入 (替代patch embedding)
+        # 1. 时间特征嵌入
         # (B, N, T, C) -> (B, N, T, D)
         self.time_embedding = nn.Sequential(
             nn.Linear(in_channel, embed_dim // 2),
@@ -101,12 +108,11 @@ class AGPSTModel(nn.Module):
             nn.Linear(embed_dim // 2, embed_dim)
         )
         
-        # 2. 位置编码
-        self.pos_embed = nn.Parameter(torch.randn(1, 1, self.seq_len, embed_dim))
+        # 2. 位置编码 (编码器)
+        self.encoder_pos_embed = nn.Parameter(torch.randn(1, 1, self.seq_len, embed_dim))
         
         # 3. 自适应图学习
         if use_advanced_graph:
-
             self.dynamic_graph_conv = DynamicGraphConv(
                 embed_dim=embed_dim,
                 num_nodes=num_nodes,
@@ -121,12 +127,12 @@ class AGPSTModel(nn.Module):
             self.node_embeddings2 = nn.Parameter(torch.randn(dim, num_nodes))
             self.topK = topK
             
-            # 4. 简单图卷积层
+            # 简单图卷积层
             self.graph_conv = nn.ModuleList([
                 nn.Linear(embed_dim, embed_dim) for _ in range(2)
             ])
         
-        # 5. Transformer编码器
+        # 4. Transformer 编码器
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
@@ -134,17 +140,32 @@ class AGPSTModel(nn.Module):
             dropout=dropout,
             batch_first=True
         )
-        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=encoder_depth)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=encoder_depth)
         
-        # 6. MLP 预测头 (替代 GraphWaveNet)
-        self.prediction_head = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim * 2),
+        # ============ Decoder 部分 ============
+        
+        # 5. 可学习的未来查询向量 (代表未来 pred_len 个时间步)
+        self.future_queries = nn.Parameter(torch.randn(1, pred_len, embed_dim))
+        
+        # 6. 位置编码 (解码器)
+        self.decoder_pos_embed = nn.Parameter(torch.randn(1, 1, pred_len, embed_dim))
+        
+        # 7. Transformer 解码器
+        decoder_layer = nn.TransformerDecoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=embed_dim * mlp_ratio,
+            dropout=dropout,
+            batch_first=True
+        )
+        self.decoder = nn.TransformerDecoder(decoder_layer, num_layers=decoder_depth)
+        
+        # 8. 输出投影层 (embed_dim -> 1)
+        self.output_projection = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim // 2),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(embed_dim * 2, embed_dim),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(embed_dim, pred_len)  # 直接预测 pred_len 步
+            nn.Linear(embed_dim // 2, 1)
         )
         
         self.contrastive_loss = None
@@ -154,7 +175,9 @@ class AGPSTModel(nn.Module):
         if not self.use_advanced_graph:
             nn.init.xavier_uniform_(self.node_embeddings1)
             nn.init.xavier_uniform_(self.node_embeddings2)
-        nn.init.normal_(self.pos_embed, std=0.02)
+        nn.init.normal_(self.encoder_pos_embed, std=0.02)
+        nn.init.normal_(self.decoder_pos_embed, std=0.02)
+        nn.init.normal_(self.future_queries, std=0.02)
         
     def learn_graph(self):
         """学习自适应图结构（简单版本）"""
@@ -205,15 +228,16 @@ class AGPSTModel(nn.Module):
         
     def forward(self, history_data):
         """
+        Encoder-Decoder 前向传播
+        
         Args:
-            history_data: (B, 12, N, 1) 短期历史
-            long_history_data: 不使用（保持接口兼容）
+            history_data: (B, seq_len, N, 1) 短期历史数据
             
         Returns:
-            prediction: (B, 12, N, 1) 预测结果
+            prediction: (B, pred_len, N, 1) 预测结果
         """
         
-        # Step 0: 去噪（如果启用）
+        # ============ Step 0: 去噪（如果启用）============
         if self.use_denoising:
             if self.denoise_type == 'conv':
                 # 卷积去噪：在时间维度上处理
@@ -234,27 +258,23 @@ class AGPSTModel(nn.Module):
         else:
             history_data_clean = history_data
         
-        # 使用去噪后的数据
         B, T, N, C = history_data_clean.shape
-
+        
+        # ============ ENCODER 部分 ============
+        
         # 转换格式: (B, T, N, C) -> (B, N, T, C)
         x = history_data_clean.permute(0, 2, 1, 3)  # (B, N, T, C)
 
         # Step 1: 时间特征嵌入
         x = self.time_embedding(x)  # (B, N, T, D)
         
-        # Step 2: 添加位置编码
-        x = x + self.pos_embed  # (B, N, T, D)
+        # Step 2: 添加位置编码 (编码器)
+        x = x + self.encoder_pos_embed  # (B, N, T, D)
         
-        # Step 3 & 4: 自适应图学习 + 图卷积
+        # Step 3: 自适应图学习 + 图卷积
         if self.use_advanced_graph:
             # 使用高级图学习模块
-            # 准备输入：(B, N, T, D) -> (B, N, P, D)，这里P=T因为没有patch
-            patch_features = x  # (B, N, T, D)
-            
-            # 动态图卷积（内部会调用self.graph_learner）
-            # 避免重复调用graph_learner.forward()
-            x, learned_adjs, contrastive_loss = self.dynamic_graph_conv(patch_features)  # (B, N, T, D)
+            x, learned_adjs, contrastive_loss = self.dynamic_graph_conv(x)  # (B, N, T, D)
             self.contrastive_loss = contrastive_loss
             x = F.relu(x)
         else:
@@ -262,22 +282,40 @@ class AGPSTModel(nn.Module):
             adj = self.learn_graph()  # (N, N)
             x = self.graph_convolution(x, adj)  # (B, N, T, D)
         
-        # Step 5: Transformer时序建模
+        # Step 4: Transformer 编码器
         # (B, N, T, D) -> (B*N, T, D)
-        BN, T, D = B * N, x.size(2), x.size(3)
-        x_flat = x.reshape(BN, T, D)
-        x_flat = self.transformer(x_flat)  # (B*N, T, D)
-        x = x_flat.reshape(B, N, T, D)  # (B, N, T, D)
+        x_flat = x.reshape(B * N, T, self.embed_dim)
+        encoder_output = self.encoder(x_flat)  # (B*N, T, D)
+        # (B*N, T, D) -> (B, N, T, D)
+        encoder_output = encoder_output.reshape(B, N, T, self.embed_dim)
         
-        # Step 6: 提取最后时间步特征用于预测
-        # 使用最后一个时间步的输出 (B, N, D)
-        x_last = x[:, :, -1, :]  # (B, N, D)
+        # ============ DECODER 部分 ============
         
-        # Step 7: MLP 预测
-        prediction = self.prediction_head(x_last)  # (B, N, pred_len)
+        # Step 5: 准备解码器查询向量
+        # future_queries: (1, pred_len, D) -> (B*N, pred_len, D)
+        queries = self.future_queries.expand(B * N, -1, -1)  # (B*N, pred_len, D)
         
-        # Step 8: 转换输出格式: (B, N, pred_len) -> (B, pred_len, N, 1)
-        prediction = prediction.permute(0, 2, 1).unsqueeze(-1)  # (B, pred_len, N, 1)
+        # Step 6: 添加位置编码 (解码器)
+        # decoder_pos_embed: (1, 1, pred_len, D) -> (B*N, pred_len, D)
+        queries = queries + self.decoder_pos_embed.squeeze(1)  # (B*N, pred_len, D)
+        
+        # Step 7: Transformer 解码器 (交叉注意力)
+        # 准备编码器输出作为 memory: (B, N, T, D) -> (B*N, T, D)
+        memory = encoder_output.reshape(B * N, T, self.embed_dim)
+        
+        # 解码
+        decoder_output = self.decoder(queries, memory)  # (B*N, pred_len, D)
+        
+        # Step 8: 输出投影
+        # (B*N, pred_len, D) -> (B*N, pred_len, 1)
+        prediction_flat = self.output_projection(decoder_output)
+        
+        # Step 9: 重塑为最终输出格式
+        # (B*N, pred_len, 1) -> (B, N, pred_len, 1) -> (B, pred_len, N, 1)
+        prediction = prediction_flat.reshape(B, N, self.pred_len, 1)
+        prediction = prediction.permute(0, 2, 1, 3)  # (B, pred_len, N, 1)
+        
+        return prediction
         
         return prediction
 

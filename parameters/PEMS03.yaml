@@ -64,6 +64,9 @@ encoder_depth: 4
 num_heads: 4
 mlp_ratio: 4
 
+# Transformer decoder (Encoder-Decoder架构)
+decoder_depth: 2  # 解码器层数
+
 # Prediction head
 pred_len: 12  # 预测长度
 
