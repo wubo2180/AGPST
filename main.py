@@ -435,24 +435,68 @@ def train(config, args):
 
 
 def main(config, args):
-    # Set experiment name
-    experiment_name = f"{config['dataset_name']}_AGPST"
+    # Set experiment name based on model architecture
+    model_name = config.get('model_name', 'AGPST')
+    dataset_name = config['dataset_name']
+    
+    if model_name == 'AlternatingSTModel':
+        fusion_type = config.get('fusion_type', 'gated')
+        experiment_name = f"{dataset_name}_AlternatingST_{fusion_type}_lr{config['lr']}_bs{config['batch_size']}"
+    else:
+        experiment_name = f"{dataset_name}_AGPST_lr{config['lr']}_bs{config['batch_size']}"
     
     if SWANLAB_AVAILABLE:
+        # Build comprehensive config for SwanLab
+        swanlab_config = {
+            # Basic info
+            "model_name": model_name,
+            "dataset": dataset_name,
+            "mode": "train",
+            
+            # Dataset config
+            "num_nodes": config['num_nodes'],
+            "input_len": config['input_len'],
+            "output_len": config['output_len'],
+            
+            # Training config
+            "epochs": config.get('epochs', 100),
+            "batch_size": config['batch_size'],
+            "learning_rate": config['lr'],
+            "weight_decay": config.get('weight_decay', 1.0e-5),
+            
+            # Model architecture
+            "embed_dim": config.get('embed_dim', 96),
+            "num_heads": config.get('num_heads', 4),
+            "dropout": config.get('dropout', 0.05),
+            
+            # Optimization
+            "use_amp": config.get('use_amp', False),
+            "use_denoising": config.get('use_denoising', True),
+        }
+        
+        # Add architecture-specific config
+        if model_name == 'AlternatingSTModel':
+            swanlab_config.update({
+                "temporal_depth_1": config.get('temporal_depth_1', 2),
+                "spatial_depth_1": config.get('spatial_depth_1', 2),
+                "temporal_depth_2": config.get('temporal_depth_2', 2),
+                "spatial_depth_2": config.get('spatial_depth_2', 2),
+                "fusion_type": config.get('fusion_type', 'gated'),
+            })
+        else:
+            swanlab_config.update({
+                "encoder_depth": config.get('encoder_depth', 4),
+                "decoder_depth": config.get('decoder_depth', 1),
+                "denoise_type": config.get('denoise_type', 'conv'),
+            })
+        
         swanlab.init(
             project="AGPST-forecasting",
             experiment_name=experiment_name,
-            config={
-                "mode": "train",
-                "dataset": config['dataset_name'],
-                "num_nodes": config['num_nodes'],
-                "embed_dim": config['embed_dim'],
-                "epochs": config.get('epochs', config.get('finetune_epochs', 100)),
-                "batch_size": config['batch_size'],
-                "learning_rate": config['lr']
-            },
+            config=swanlab_config,
             mode=args.swanlab_mode,
         )
+    
     train(config, args)
 
     if SWANLAB_AVAILABLE:
