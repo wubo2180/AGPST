@@ -307,14 +307,16 @@ class DynamicGraphConv(nn.Module):
     """动态图卷积模块"""
     def __init__(self, embed_dim, num_nodes, node_dim, graph_heads=4, topk=10, dropout=0.1):
         super().__init__()
+        
+
         self.graph_learner = AdaptiveGraphLearner(
-            num_nodes=num_nodes,
-            node_dim=node_dim, 
-            embed_dim=embed_dim,
-            graph_heads=graph_heads,
-            topk=topk,
-            dropout=dropout
-        )
+                num_nodes=num_nodes,
+                node_dim=node_dim, 
+                embed_dim=embed_dim,
+                graph_heads=graph_heads,
+                topk=topk,
+                dropout=dropout
+            )
         
         self.weight = nn.Parameter(torch.randn(embed_dim, embed_dim))
         self.bias = nn.Parameter(torch.zeros(embed_dim))

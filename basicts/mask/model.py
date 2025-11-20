@@ -1,8 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from ..graphwavenet import GraphWaveNet
-from .graph_learning import AdaptiveGraphLearner, DynamicGraphConv
+from .graph_learning import DynamicGraphConv
 
 
 class DenoiseAttention(nn.Module):
@@ -60,16 +59,18 @@ class AGPSTModel(nn.Module):
     1. 时间特征嵌入 (Linear)
     2. 高级自适应图学习 (AdaptiveGraphLearner)
     3. 动态图卷积 + Transformer
-    4. GraphWaveNet预测
+    4. MLP 预测头
     """
     def __init__(self, num_nodes, dim, topK, in_channel, embed_dim, 
-                 num_heads, mlp_ratio, dropout, encoder_depth, backend_args,
+                 num_heads, mlp_ratio, dropout, encoder_depth,
                  use_denoising=True, denoise_type='conv',
-                 use_advanced_graph=True, graph_heads=4):
+                 use_advanced_graph=True, graph_heads=4,
+                 pred_len=12):
         super().__init__()
         self.num_nodes = num_nodes
         self.embed_dim = embed_dim
         self.seq_len = 12  # 固定的短期历史长度
+        self.pred_len = pred_len  # 预测长度
         self.use_denoising = use_denoising
         self.denoise_type = denoise_type
         self.use_advanced_graph = use_advanced_graph
@@ -105,18 +106,7 @@ class AGPSTModel(nn.Module):
         
         # 3. 自适应图学习
         if use_advanced_graph:
-            # 使用高级图学习模块
-            self.graph_learner = AdaptiveGraphLearner(
-                num_nodes=num_nodes,
-                node_dim=dim,
-                embed_dim=embed_dim,
-                graph_heads=graph_heads,
-                topk=topK,
-                dropout=dropout,
-                use_temporal_info=True
-            )
-            
-            # 动态图卷积
+
             self.dynamic_graph_conv = DynamicGraphConv(
                 embed_dim=embed_dim,
                 num_nodes=num_nodes,
@@ -146,8 +136,16 @@ class AGPSTModel(nn.Module):
         )
         self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=encoder_depth)
         
-        # 6. 后端预测
-        self.backend = GraphWaveNet(**backend_args)
+        # 6. MLP 预测头 (替代 GraphWaveNet)
+        self.prediction_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 2),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim * 2, embed_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(embed_dim, pred_len)  # 直接预测 pred_len 步
+        )
         
         self.contrastive_loss = None
         self._init_weights()
@@ -254,12 +252,10 @@ class AGPSTModel(nn.Module):
             # 准备输入：(B, N, T, D) -> (B, N, P, D)，这里P=T因为没有patch
             patch_features = x  # (B, N, T, D)
             
-            # 学习自适应图
-            learned_adjs, contrastive_loss = self.graph_learner(patch_features)  # (B, N, N), scalar
+            # 动态图卷积（内部会调用self.graph_learner）
+            # 避免重复调用graph_learner.forward()
+            x, learned_adjs, contrastive_loss = self.dynamic_graph_conv(patch_features)  # (B, N, T, D)
             self.contrastive_loss = contrastive_loss
-            
-            # 动态图卷积
-            x, _, _ = self.dynamic_graph_conv(patch_features)  # (B, N, T, D)
             x = F.relu(x)
         else:
             # 使用简单图学习（原版）
@@ -273,20 +269,15 @@ class AGPSTModel(nn.Module):
         x_flat = self.transformer(x_flat)  # (B*N, T, D)
         x = x_flat.reshape(B, N, T, D)  # (B, N, T, D)
         
-        # Step 6: 准备 GraphWaveNet 的输入
-        # GraphWaveNet 需要:
-        #   - input: (B, L, N, C) 原始历史数据
-        #   - hidden_states: (B, N, d) Transformer最后一个时间步的输出
+        # Step 6: 提取最后时间步特征用于预测
+        # 使用最后一个时间步的输出 (B, N, D)
+        x_last = x[:, :, -1, :]  # (B, N, D)
         
-        # 提取 hidden_states: 使用最后一个时间步的输出 (B, N, D)
-        hidden_states = x[:, :, -1, :]  # (B, N, 96)
+        # Step 7: MLP 预测
+        prediction = self.prediction_head(x_last)  # (B, N, pred_len)
         
-        # Step 7: GraphWaveNet 预测
-        # 输入原始历史数据 (B, T, N, C) 和 Transformer 特征
-        prediction = self.backend(history_data, hidden_states)  # (B, N, 12)
-        
-        # 转换输出格式: (B, N, 12) -> (B, 12, N, 1)
-        prediction = prediction.permute(0, 2, 1).unsqueeze(-1)  # (B, 12, N, 1)
+        # Step 8: 转换输出格式: (B, N, pred_len) -> (B, pred_len, N, 1)
+        prediction = prediction.permute(0, 2, 1).unsqueeze(-1)  # (B, pred_len, N, 1)
         
         return prediction
 

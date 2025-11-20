@@ -46,7 +46,7 @@ froward_features: [0]
 target_features: [0]
 
 # Denoising module
-use_denoising: True  # Enable/disable denoising
+use_denoising: False  # Enable/disable denoising
 denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
 
 # Adaptive graph learning
@@ -64,23 +64,8 @@ encoder_depth: 4
 num_heads: 4
 mlp_ratio: 4
 
-# GraphWaveNet backend
-backend_args:
-    num_nodes: 358
-    supports: ''
-    dropout: 0.3
-    gcn_bool: True
-    addaptadj: True
-    aptinit: null
-    in_dim: 1
-    out_dim: 12
-    residual_channels: 32
-    dilation_channels: 32
-    skip_channels: 256
-    end_channels: 512
-    kernel_size: 2
-    blocks: 4
-    layers: 2
+# Prediction head
+pred_len: 12  # 预测长度
 
 # --------------------- Evaluation Metrics ---------------------
 metrics:
