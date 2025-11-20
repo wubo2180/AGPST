@@ -265,11 +265,12 @@ def train(config, args):
         mlp_ratio=config['mlp_ratio'],
         dropout=config['dropout'],
         encoder_depth=config['encoder_depth'],
-        backend_args=config['backend_args'],
         use_denoising=config.get('use_denoising', True),
         denoise_type=config.get('denoise_type', 'conv'),
         use_advanced_graph=config.get('use_advanced_graph', True),
-        graph_heads=config.get('graph_heads', 4)
+        graph_heads=config.get('graph_heads', 4),
+        decoder_depth=config.get('decoder_depth', 2),
+        pred_len=config.get('pred_len', 12)
     )
     model = model.to(args.device)
     
