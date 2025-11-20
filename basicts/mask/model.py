@@ -162,10 +162,14 @@ class AGPSTModel(nn.Module):
         
         # 8. 输出投影层 (embed_dim -> 1)
         self.output_projection = nn.Sequential(
-            nn.Linear(embed_dim, embed_dim // 2),
-            nn.ReLU(),
+            nn.Linear(embed_dim, embed_dim),      # 保持维度
+            nn.LayerNorm(embed_dim),              # 归一化
+            nn.GELU(),                            # 更平滑的激活
             nn.Dropout(dropout),
-            nn.Linear(embed_dim // 2, 1)
+            nn.Linear(embed_dim, embed_dim // 2), # 逐步降维
+            nn.GELU(),
+            nn.Dropout(dropout / 2),              # 减少 dropout
+            nn.Linear(embed_dim // 2, 1)          # 最终输出
         )
         
         self.contrastive_loss = None
@@ -177,7 +181,8 @@ class AGPSTModel(nn.Module):
             nn.init.xavier_uniform_(self.node_embeddings2)
         nn.init.normal_(self.encoder_pos_embed, std=0.02)
         nn.init.normal_(self.decoder_pos_embed, std=0.02)
-        nn.init.normal_(self.future_queries, std=0.02)
+        # 未来查询使用更大的初始化范围
+        nn.init.xavier_normal_(self.future_queries)
         
     def learn_graph(self):
         """学习自适应图结构（简单版本）"""
@@ -314,8 +319,6 @@ class AGPSTModel(nn.Module):
         # (B*N, pred_len, 1) -> (B, N, pred_len, 1) -> (B, pred_len, N, 1)
         prediction = prediction_flat.reshape(B, N, self.pred_len, 1)
         prediction = prediction.permute(0, 2, 1, 3)  # (B, pred_len, N, 1)
-        
-        return prediction
         
         return prediction
 

@@ -29,8 +29,8 @@ local: True
 
 # --------------------- Training Configuration ---------------------
 epochs: 100
-batch_size: 32
-lr: 0.001
+batch_size: 64      # ⭐ 增大批次以稳定梯度
+lr: 0.0003          # ⭐ 降低学习率 (Encoder-Decoder 需要更小lr)
 evaluation_horizons: 12
 
 # Gradient clipping
@@ -65,7 +65,7 @@ num_heads: 4
 mlp_ratio: 4
 
 # Transformer decoder (Encoder-Decoder架构)
-decoder_depth: 2  # 解码器层数
+decoder_depth: 1  # ⭐ 减少到1层，降低过拟合风险
 
 # Prediction head
 pred_len: 12  # 预测长度

@@ -193,7 +193,7 @@ def train(config, args):
     print('### Start Training with Adaptive Graph ... ###')
     adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
     
-    config['backend_args']['supports'] = [torch.tensor(i) for i in adj_mx]
+    # config['backend_args']['supports'] = [torch.tensor(i) for i in adj_mx]
     
     # Initialize scaler
     train_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
