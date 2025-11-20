@@ -29,7 +29,7 @@ local: True
 
 # --------------------- Training Configuration ---------------------
 epochs: 100
-batch_size: 64      # ⭐ 增大批次以稳定梯度
+batch_size: 32      # ⭐ 增大批次以稳定梯度
 lr: 0.001          # ⭐ 降低学习率 (Encoder-Decoder 需要更小lr)
 evaluation_horizons: 12
 
@@ -57,7 +57,7 @@ topK: 10  # Top-K sparsification
 
 # Time embedding
 embed_dim: 96
-dropout: 0.05  # ⭐ 降低 dropout，允许模型学习更多
+dropout: 0.1  # ⭐ 降低 dropout，允许模型学习更多
 
 # Transformer encoder
 encoder_depth: 4
