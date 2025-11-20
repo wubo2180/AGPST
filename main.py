@@ -10,7 +10,8 @@ import functools
 import torch
 import torch.optim as optim
 from torch.utils.data import  DataLoader
-from torch.cuda.amp import autocast, GradScaler  # ⭐ 混合精度训练
+from torch.amp import autocast
+from torch.amp.grad_scaler import GradScaler  # Mixed Precision Training
 from basicts.utils import load_adj, load_pkl
 
 from basicts.data import BasicTSForecastingDataset
@@ -75,7 +76,7 @@ def metric_forward(metric_func, args):
 
 
 def validate(val_data_loader, model, config, scaler, epoch, args):
-    """验证模型"""
+    """Validate model"""
     model.eval()
     
     prediction = []
@@ -102,11 +103,11 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
         
-        # 反归一化
+        # Inverse normalization
         prediction_rescaled = scaler.inverse_transform(prediction)
         real_value_rescaled = scaler.inverse_transform(real_value)
 
-        # 计算指标
+        # Calculate metrics
         metric_results = {}
         for metric_name, metric_func in metrics.items():
             metric_item = metric_forward(metric_func, [prediction_rescaled, real_value_rescaled])
@@ -128,7 +129,7 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
 
 
 def test(test_data_loader, model, config, scaler, epoch, args):
-    """测试模型"""
+    """Test model"""
     model.eval()
     
     prediction = []
@@ -149,16 +150,16 @@ def test(test_data_loader, model, config, scaler, epoch, args):
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
             
-            # 测试模式：只处理一个batch
+            # Test mode: process only one batch
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
         
-        # 反归一化
+        # Inverse normalization
         prediction = scaler.inverse_transform(prediction)
         real_value = scaler.inverse_transform(real_value)
 
-        # 计算每个时间步的指标
+        # Calculate metrics for each horizon
         for i in range(config['evaluation_horizons']):
             pred = prediction[:, i, :, :]
             real = real_value[:, i, :, :]
@@ -171,7 +172,7 @@ def test(test_data_loader, model, config, scaler, epoch, args):
             print(f"Horizon {i+1:2d} - MAE: {metric_results['MAE']:.4f}, RMSE: {metric_results['RMSE']:.4f}, MAPE: {metric_results['MAPE']:.4f}")
             logging.info(f"Horizon {i+1:2d} - MAE: {metric_results['MAE']:.4f}, RMSE: {metric_results['RMSE']:.4f}, MAPE: {metric_results['MAPE']:.4f}")
         
-        # 计算总体指标
+        # Calculate overall metrics
         metric_results = {}
         for metric_name, metric_func in metrics.items():
             metric_item = metric_forward(metric_func, [prediction, real_value])
@@ -190,7 +191,7 @@ def test(test_data_loader, model, config, scaler, epoch, args):
 
 def train(config, args):
     """
-    端到端训练，使用自适应图学习
+    End-to-end training with adaptive graph learning
     """
     print('### Start Training with Adaptive Graph ... ###')
     adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
@@ -256,11 +257,11 @@ def train(config, args):
     val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     
-    # 创建模型 - 支持多种架构
+    # Create model - Support multiple architectures
     model_name = config.get('model_name', 'AGPST')
     
     if model_name == 'AlternatingSTModel':
-        # 新的交替时空架构
+        # New alternating spatio-temporal architecture
         print(f"\n{'='*60}")
         print("🚀 Using Alternating Spatio-Temporal Architecture!")
         print(f"{'='*60}")
@@ -280,7 +281,7 @@ def train(config, args):
             use_denoising=config.get('use_denoising', True)
         )
     else:
-        # 原始 AGPST 架构
+        # Original AGPST architecture
         print(f"\n{'='*60}")
         print("Using Original AGPST Architecture")
         print(f"{'='*60}")
@@ -303,19 +304,19 @@ def train(config, args):
         )
     model = model.to(args.device)
     
-    # 优化器
+    # Optimizer
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
     
-    # ⭐ 混合精度训练 GradScaler
+    # Mixed Precision Training GradScaler
     use_amp = config.get('use_amp', False)
-    scaler = GradScaler() if use_amp else None
+    scaler = GradScaler('cuda') if use_amp else None
     if use_amp:
         print(f"\n{'='*60}")
         print("⚡ Mixed Precision Training (AMP) Enabled!")
         print("Expected speedup: 30-50%")
         print(f"{'='*60}\n")
     
-    # 学习率调度器
+    # Learning rate scheduler
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
     
     best_val_loss = float('inf')
@@ -340,18 +341,18 @@ def train(config, args):
             history_data = history_data.to(args.device)
             # print(f"history_data shape: {history_data.shape}, labels shape: {labels.shape}")
             
-            # ⭐ 混合精度训练前向传播
+            # Mixed Precision Training - Forward Pass
             if use_amp:
-                with autocast():
-                    # 前向传播
+                with autocast(device_type='cuda', dtype=torch.float16):
+                    # Forward pass
                     preds = model(history_data)
                     prediction_rescaled = train_scaler.inverse_transform(preds)
                     real_value_rescaled = train_scaler.inverse_transform(labels)
                     
-                    # 计算主损失
+                    # Calculate main loss
                     loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
                     
-                    # 添加对比学习损失（如果存在）
+                    # Add contrastive loss if exists
                     total_loss = loss
                     if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
                         contrastive_weight = config.get('contrastive_weight', 0.1)
@@ -359,7 +360,7 @@ def train(config, args):
                             total_loss = loss + contrastive_weight * model.contrastive_loss
                             epoch_contrastive_loss += model.contrastive_loss.item()
                 
-                # 反向传播 (AMP)
+                # Backward pass (AMP)
                 optimizer.zero_grad()
                 scaler.scale(total_loss).backward()
                 scaler.unscale_(optimizer)
@@ -367,15 +368,15 @@ def train(config, args):
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                # 原始训练流程 (不使用 AMP)
+                # Original training loop (without AMP)
                 preds = model(history_data)
                 prediction_rescaled = train_scaler.inverse_transform(preds)
                 real_value_rescaled = train_scaler.inverse_transform(labels)
                 
-                # 计算主损失
+                # Calculate main loss
                 loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
                 
-                # 添加对比学习损失（如果存在）
+                # Add contrastive loss if exists
                 total_loss = loss
                 if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
                     contrastive_weight = config.get('contrastive_weight', 0.1)
@@ -383,7 +384,7 @@ def train(config, args):
                         total_loss = loss + contrastive_weight * model.contrastive_loss
                         epoch_contrastive_loss += model.contrastive_loss.item()
                 
-                # 反向传播
+                # Backward pass
                 optimizer.zero_grad()
                 total_loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
@@ -393,13 +394,13 @@ def train(config, args):
             num_batches += 1
             
         
-        # 计算平均损失
+        # Calculate average loss
         avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
         avg_contrastive = epoch_contrastive_loss / num_batches if num_batches > 0 else 0.0
         
         print(f"Epoch {epoch} - Train Loss: {avg_loss:.6f}, Contrastive Loss: {avg_contrastive:.6f}")
         
-        # 记录到SwanLab
+        # Log to SwanLab
         log_dict = {
             "train/loss": avg_loss,
             "train/lr": optimizer.param_groups[0]['lr']
@@ -409,14 +410,14 @@ def train(config, args):
         if SWANLAB_AVAILABLE:
             swanlab.log(log_dict, step=epoch)
         
-        # 验证
+        # Validation
         print('============ Validation ============')
         val_loss = validate(val_data_loader, model, config, val_scaler, epoch, args)
         
-        # 学习率调度
+        # Learning rate scheduling
         scheduler.step(val_loss)
         
-        # 保存最佳模型
+        # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             if config.get("save_model", False):
@@ -426,7 +427,7 @@ def train(config, args):
                 torch.save(model.state_dict(), best_model_path)
                 print(f"✅ Best model saved with val loss: {val_loss:.6f}")
         
-        # 测试
+        # Test
         print('============ Test ============')
         test(test_data_loader, model, config, test_scaler, epoch, args)
     
@@ -434,7 +435,7 @@ def train(config, args):
 
 
 def main(config, args):
-    # 设置实验名称
+    # Set experiment name
     experiment_name = f"{config['dataset_name']}_AGPST"
     
     if SWANLAB_AVAILABLE:
