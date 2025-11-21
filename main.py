@@ -304,7 +304,7 @@ def train(config, args):
     model = model.to(args.device)
     
     # Optimizer
-    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=1.0e-5, eps=1.0e-8)
+    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=0.0001, eps=0.001)
     
     # Mixed Precision Training GradScaler
     use_amp = config.get('use_amp', False)
