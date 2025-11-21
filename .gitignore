@@ -244,5 +244,6 @@ credentials.json
 
 # Conda environment files
 environment_local.yaml
-
+*.out
+*.tif
 datasets/ --- IGNORE ---
