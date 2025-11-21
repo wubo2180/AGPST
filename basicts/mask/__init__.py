@@ -3,16 +3,14 @@ AGPST模型模块
 """
 from .model import AGPSTModel, ForecastingWithAdaptiveGraph
 from .graph_learning import DynamicGraphConv, AdaptiveGraphLearner
-from .patch_embed import PatchEmbedding
-from .transformer import TransformerLayers
-from .positional_encoding import PositionalEncoding
+from .alternating_st import AlternatingSTModel
+from .alternating_st_phase2 import AlternatingSTModel_Phase2
 
 __all__ = [
     'AGPSTModel',
     'ForecastingWithAdaptiveGraph',
     'DynamicGraphConv',
     'AdaptiveGraphLearner',
-    'PatchEmbedding',
-    'TransformerLayers',
-    'PositionalEncoding',
+    'AlternatingSTModel',
+    'AlternatingSTModel_Phase2',
 ]

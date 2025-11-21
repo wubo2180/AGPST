@@ -1,0 +1,82 @@
+# Phase 2 优化版交替架构 - PEMS03数据集
+# 包含跳跃连接、批处理和参数共享优化
+
+# 数据集设置
+DATASET_NAME: 'PEMS03'
+DATASET_TYPE: 'ForecastingDataset'
+DATASET_INPUT_LEN: 12
+DATASET_OUTPUT_LEN: 12
+
+# 模型架构
+MODEL_NAME: 'AlternatingSTModel_Phase2'
+MODEL_ARCH: 'basicts.mask'
+
+# Phase 2 新增配置
+MODEL_PARAM:
+  # 基础参数
+  num_nodes: 358
+  in_steps: 12
+  out_steps: 12
+  input_dim: 1
+  output_dim: 1
+  embed_dim: 64
+  num_heads: 4
+  num_layers: 2
+  mlp_ratio: 4
+  dropout: 0.1
+  
+  # Fusion配置
+  fusion_type: 'gated'
+  
+  # Phase 2 优化开关
+  use_skip_connections: true
+  skip_connection_type: 'add'
+  use_parameter_sharing: true
+  batch_spatial_encoding: true
+
+# 训练配置
+TRAIN:
+  BATCH_SIZE: 32
+  NUM_WORKERS: 4
+  SHUFFLE: true
+  PIN_MEMORY: true
+  
+  OPTIMIZER:
+    NAME: 'Adam'
+    LR: 0.001  # PEMS数据集使用标准学习率
+    WEIGHT_DECAY: 0.0001
+    BETAS: [0.9, 0.999]
+  
+  LR_SCHEDULER:
+    NAME: 'MultiStepLR'
+    MILESTONES: [50, 100]
+    GAMMA: 0.5
+  
+  EPOCHS: 150
+  CLIP_GRAD_NORM: 5.0
+  USE_AMP: true
+  LOSS: 'masked_mae'
+  
+  EARLY_STOPPING:
+    PATIENCE: 20
+    MIN_DELTA: 0.0001
+
+VAL:
+  INTERVAL: 1
+  BATCH_SIZE: 64
+
+TEST:
+  BATCH_SIZE: 64
+
+LOG_DIR: './logs/PEMS03_alternating_phase2'
+CKPT_SAVE_DIR: './checkpoints/PEMS03_alternating_phase2'
+SAVE_FREQ: 10
+
+SWANLAB:
+  ENABLE: true
+  PROJECT_NAME: 'AGPST-AlternatingArchitecture'
+  EXPERIMENT_NAME: 'PEMS03_Phase2'
+  TAGS: ['PEMS03', 'Phase2', 'skip_connections', 'parameter_sharing']
+
+DEVICE: 'cuda:0'
+SEED: 42

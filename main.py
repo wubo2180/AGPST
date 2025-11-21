@@ -17,6 +17,7 @@ from basicts.utils import load_adj, load_pkl
 from basicts.data import BasicTSForecastingDataset
 from basicts.mask.model import AGPSTModel
 from basicts.mask.alternating_st import AlternatingSTModel
+from basicts.mask.alternating_st_phase2 import AlternatingSTModel_Phase2
 from basicts.scaler import ZScoreScaler
 
 from basicts.metrics import masked_mae, masked_rmse, masked_mape
@@ -279,6 +280,24 @@ def train(config, args):
             dropout=config.get('dropout', 0.05),
             use_denoising=config.get('use_denoising', True)
         )
+    elif model_name == 'AlternatingSTModel_Phase2':
+        # Phase 2 alternating spatio-temporal architecture
+        print(f"\n{'='*60}")
+        print("🚀 Using Phase 2 Alternating Spatio-Temporal Architecture!")
+        print(f"{'='*60}")
+        model = AlternatingSTModel_Phase2(
+            num_nodes=config['num_nodes'],
+            in_steps=config['input_len'],
+            out_steps=config['output_len'],
+            input_dim=config['in_channel'],
+            embed_dim=config.get('embed_dim', 96),
+            num_heads=config.get('num_heads', 4),
+            temporal_depth=config.get('temporal_depth', 2),
+            spatial_depth=config.get('spatial_depth', 2),
+            fusion_type=config.get('fusion_type', 'gated'),
+            dropout=config.get('dropout', 0.05),
+            use_denoising=config.get('use_denoising', True)
+        )
     else:
         # Original AGPST architecture
         print(f"\n{'='*60}")
@@ -304,7 +323,7 @@ def train(config, args):
     model = model.to(args.device)
     
     # Optimizer
-    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=0.0001, eps=0.001)
+    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=config['weight_decay'], eps=config['eps'])
     
     # Mixed Precision Training GradScaler
     use_amp = config.get('use_amp', False)

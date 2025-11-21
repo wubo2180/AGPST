@@ -1,0 +1,97 @@
+# Phase 2 优化版交替架构 - METR-LA数据集
+# 包含跳跃连接、批处理和参数共享优化
+# 基于诊断结果使用 lr=0.0005
+
+# 数据集设置
+DATASET_NAME: 'METR-LA'
+DATASET_TYPE: 'ForecastingDataset'
+DATASET_INPUT_LEN: 12
+DATASET_OUTPUT_LEN: 12
+
+# 模型架构
+MODEL_NAME: 'AlternatingSTModel_Phase2'
+MODEL_ARCH: 'basicts.mask'
+
+# Phase 2 新增配置
+MODEL_PARAM:
+  # 基础参数（与Phase 1相同）
+  num_nodes: 207
+  in_steps: 12
+  out_steps: 12
+  input_dim: 1
+  output_dim: 1
+  embed_dim: 64
+  num_heads: 4
+  num_layers: 2
+  mlp_ratio: 4
+  dropout: 0.1
+  
+  # Fusion配置
+  fusion_type: 'gated'  # gated/concat/cross_attention
+  
+  # Phase 2 优化开关
+  use_skip_connections: true        # 启用跳跃连接
+  skip_connection_type: 'add'       # add/concat
+  use_parameter_sharing: true       # 启用参数共享（减少~40%参数）
+  batch_spatial_encoding: true      # 启用批处理优化（提速~30%）
+
+# 训练配置
+TRAIN:
+  # 数据加载
+  BATCH_SIZE: 32
+  NUM_WORKERS: 4
+  SHUFFLE: true
+  PIN_MEMORY: true
+  
+  # 优化器（使用诊断出的最优学习率）
+  OPTIMIZER:
+    NAME: 'Adam'
+    LR: 0.0005  # 诊断结果：lr=0.0005 在METR-LA上MAE=4.5387
+    WEIGHT_DECAY: 0.0001
+    BETAS: [0.9, 0.999]
+  
+  # 学习率调度
+  LR_SCHEDULER:
+    NAME: 'MultiStepLR'
+    MILESTONES: [50, 100]
+    GAMMA: 0.5
+  
+  # 训练参数
+  EPOCHS: 150
+  CLIP_GRAD_NORM: 5.0
+  
+  # 混合精度训练
+  USE_AMP: true
+  
+  # 损失函数
+  LOSS: 'masked_mae'
+  
+  # 早停
+  EARLY_STOPPING:
+    PATIENCE: 20
+    MIN_DELTA: 0.0001
+
+# 验证配置
+VAL:
+  INTERVAL: 1
+  BATCH_SIZE: 64
+
+# 测试配置
+TEST:
+  BATCH_SIZE: 64
+
+# 日志和检查点
+LOG_DIR: './logs/METR-LA_alternating_phase2'
+CKPT_SAVE_DIR: './checkpoints/METR-LA_alternating_phase2'
+SAVE_FREQ: 10
+
+# SwanLab配置
+SWANLAB:
+  ENABLE: true
+  PROJECT_NAME: 'AGPST-AlternatingArchitecture'
+  EXPERIMENT_NAME: 'METR-LA_Phase2_lr0.0005'
+  TAGS: ['METR-LA', 'Phase2', 'skip_connections', 'parameter_sharing', 'batch_processing']
+
+# GPU设置
+DEVICE: 'cuda:0'
+SEED: 42
