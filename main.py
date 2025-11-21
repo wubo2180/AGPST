@@ -84,7 +84,7 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', disable=True if args.tqdm_mode == 'disabled' else False)):
+        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
             history_data = data["inputs"]
             future_data = data["targets"]
             history_data = scaler.transform(history_data)
@@ -137,7 +137,7 @@ def test(test_data_loader, model, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', disable=True if args.tqdm_mode == 'disabled' else False)):
+        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
             history_data = data["inputs"]
             future_data = data["targets"]
             history_data = scaler.transform(history_data)
@@ -345,8 +345,8 @@ def train(config, args):
         
         epoch_loss = 0.0
         num_batches = 0
-        
-        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', disable=True if args.tqdm_mode == 'disabled' else False)):
+
+        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
 
             history_data = data["inputs"]
             future_data = data["targets"]

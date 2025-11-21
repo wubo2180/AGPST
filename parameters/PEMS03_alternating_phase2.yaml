@@ -1,82 +1,119 @@
-# Phase 2 优化版交替架构 - PEMS03数据集
-# 包含跳跃连接、批处理和参数共享优化
+# ============================================================================
+# Alternating Spatio-Temporal Architecture - Phase 2 Optimized
+# Dataset: PEMS03 (358 nodes)
+# Model: AlternatingSTModel_Phase2
+# Optimizations: Skip Connections + Parameter Sharing + Batch Processing
+# ============================================================================
 
-# 数据集设置
-DATASET_NAME: 'PEMS03'
-DATASET_TYPE: 'ForecastingDataset'
-DATASET_INPUT_LEN: 12
-DATASET_OUTPUT_LEN: 12
+# --------------------- Basic Information ---------------------
+description: 'Phase 2 Optimized Alternating ST Model with Skip Connections'
+model_name: 'AlternatingSTModel_Phase2'
+dataset_name: "PEMS03"
+dataset_type: "Traffic speed"
+mode: train
 
-# 模型架构
-MODEL_NAME: 'AlternatingSTModel_Phase2'
-MODEL_ARCH: 'basicts.mask'
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
 
-# Phase 2 新增配置
-MODEL_PARAM:
-  # 基础参数
-  num_nodes: 358
-  in_steps: 12
-  out_steps: 12
-  input_dim: 1
-  output_dim: 1
-  embed_dim: 64
-  num_heads: 4
-  num_layers: 2
-  mlp_ratio: 4
-  dropout: 0.1
-  
-  # Fusion配置
-  fusion_type: 'gated'
-  
-  # Phase 2 优化开关
-  use_skip_connections: true
-  skip_connection_type: 'add'
-  use_parameter_sharing: true
-  batch_spatial_encoding: true
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/PEMS03/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 358
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
 
-# 训练配置
-TRAIN:
-  BATCH_SIZE: 32
-  NUM_WORKERS: 4
-  SHUFFLE: true
-  PIN_MEMORY: true
-  
-  OPTIMIZER:
-    NAME: 'Adam'
-    LR: 0.001  # PEMS数据集使用标准学习率
-    WEIGHT_DECAY: 0.0001
-    BETAS: [0.9, 0.999]
-  
-  LR_SCHEDULER:
-    NAME: 'MultiStepLR'
-    MILESTONES: [50, 100]
-    GAMMA: 0.5
-  
-  EPOCHS: 150
-  CLIP_GRAD_NORM: 5.0
-  USE_AMP: true
-  LOSS: 'masked_mae'
-  
-  EARLY_STOPPING:
-    PATIENCE: 20
-    MIN_DELTA: 0.0001
+# --------------------- Training Configuration ---------------------
+epochs: 100
+batch_size: 32           
+lr: 0.001  # PEMS datasets use standard lr (unlike METR-LA which needs 0.0005)
+weight_decay: 0.0003
+eps: 0.001
+evaluation_horizons: 12
 
-VAL:
-  INTERVAL: 1
-  BATCH_SIZE: 64
+# Learning rate scheduler
+scheduler:
+    type: 'ReduceLROnPlateau'
+    patience: 10
+    factor: 0.5
+    min_lr: 0.00001
 
-TEST:
-  BATCH_SIZE: 64
+# Gradient clipping
+train:
+    clip_grad_param:
+        max_norm: 5.0
+    null_val: 0.0
 
-LOG_DIR: './logs/PEMS03_alternating_phase2'
-CKPT_SAVE_DIR: './checkpoints/PEMS03_alternating_phase2'
-SAVE_FREQ: 10
+# --------------------- Phase 2 Architecture Configuration ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
 
-SWANLAB:
-  ENABLE: true
-  PROJECT_NAME: 'AGPST-AlternatingArchitecture'
-  EXPERIMENT_NAME: 'PEMS03_Phase2'
-  TAGS: ['PEMS03', 'Phase2', 'skip_connections', 'parameter_sharing']
+# Core architecture parameters
+embed_dim: 96  # Feature dimension
+dropout: 0.05
+num_heads: 4
+mlp_ratio: 4
 
-DEVICE: 'cuda:0'
-SEED: 42
+# Temporal and Spatial depth (simplified in Phase 2)
+temporal_depth: 2  # Shared temporal encoder depth
+spatial_depth: 2   # Shared spatial encoder depth
+
+# Fusion mechanism
+fusion_type: 'gated'  # Options: 'gated', 'concat', 'cross_attn'
+
+# Advanced features
+use_positional_encoding: True
+use_layer_norm: True
+
+# --------------------- Phase 2 Optimizations ---------------------
+# Skip Connections: Multi-level residual connections
+use_skip_connections: True
+skip_connection_type: 'add'  # Options: 'add', 'concat'
+
+# Parameter Sharing: Share encoders between Stage 1 and Stage 2
+use_parameter_sharing: True  # Reduces ~40% parameters
+
+# Batch Processing: Vectorized spatial encoding
+batch_spatial_encoding: True  # ~30% speedup
+
+# --------------------- Denoise Settings ---------------------
+use_denoising: True  # Keep denoising for PEMS03 (more noisy than METR-LA)
+denoise_type: 'conv'
+
+# --------------------- Adaptive Graph Learning ---------------------
+use_advanced_graph: True
+graph_heads: 4
+dim: 10
+topK: 10
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Optimization ---------------------
+use_amp: False  # Automatic mixed precision
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/PEMS03_AlternatingST_Phase2/'
+
+# --------------------- Logging Configuration ---------------------
+test_mode: False
+swanlab_mode: 'online'
+log_dir: 'logs/PEMS03_AlternatingST_Phase2/'
+
+# --------------------- Phase 2 Improvements ---------------------
+# Expected Results:
+#   Phase 1 Baseline: MAE ~17-18
+#   Phase 2 Target:   MAE ~15-16 (10-15% improvement)
+# ============================================================================
+

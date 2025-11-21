@@ -192,20 +192,26 @@ class AlternatingSTModel_Phase2(nn.Module):
         
         Args:
             x: (B, N, T, D)
-            spatial_encoder: 空间编码器
+            spatial_encoder: 空间编码器 (期望输入 (B, N, T, D))
         Returns:
             spatial_features: (B, N, T, D)
         """
         B, N, T, D = x.shape
         
-        # 重塑: (B, N, T, D) → (B*T, N, D)
-        x_batched = x.permute(0, 2, 1, 3).reshape(B * T, N, D)
+        # SpatialEncoder 内部会将 (B, N, T, D) 重塑为 (B*T, N, D) 处理
+        # 我们直接逐时间步循环，但用向量化操作优化
+        # 
+        # 方案: 将时间维度展开到批次维度
+        # (B, N, T, D) → (B*T, N, 1, D) 让 SpatialEncoder 认为 T=1
         
-        # 批处理编码所有时间步
-        spatial_batched = spatial_encoder(x_batched)  # (B*T, N, D)
+        # 重塑: (B, N, T, D) → (B*T, N, 1, D)
+        x_batched = x.permute(0, 2, 1, 3).reshape(B * T, N, 1, D)
         
-        # 重塑回: (B*T, N, D) → (B, T, N, D) → (B, N, T, D)
-        spatial_features = spatial_batched.reshape(B, T, N, D).permute(0, 2, 1, 3)
+        # 调用 spatial_encoder，它会处理 (B*T, N, 1, D) → (B*T, N, 1, D)
+        spatial_batched = spatial_encoder(x_batched)  # (B*T, N, 1, D)
+        
+        # 重塑回: (B*T, N, 1, D) → (B, T, N, D) → (B, N, T, D)
+        spatial_features = spatial_batched.squeeze(2).reshape(B, T, N, D).permute(0, 2, 1, 3)
         
         return spatial_features
     
