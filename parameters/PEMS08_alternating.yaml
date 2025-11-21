@@ -75,9 +75,14 @@ fusion_type: 'gated'    # Fusion method: 'gated', 'concat', 'cross_attn'
 
 # Regularization
 dropout: 0.05           # Dropout rate
-
-# Denoising
-use_denoising: True     # Enable denoising module
+# --------------------- Denoise Settings ---------------------
+use_denoising: False  # Enable denoising for input data
+denoise_type: 'conv'  # Options: 'conv', 'attention'
+                       # 'conv': 1D convolutional denoiser (fast)
+                       # 'attention': Attention-based denoiser (slower but effective)
+                       # 'conv' is recommended for speed and effectiveness.
+                       # 'attention' can be used for more complex scenarios.
+   # Enable denoising module
 
 # ============ Mixed Precision Training (Speed Optimization) ============
 use_amp: False           # Automatic Mixed Precision training (30-50% speedup)

@@ -196,7 +196,6 @@ def train(config, args):
     print('### Start Training with Adaptive Graph ... ###')
     adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
     
-    # config['backend_args']['supports'] = [torch.tensor(i) for i in adj_mx]
     
     # Initialize scaler
     train_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
@@ -326,7 +325,6 @@ def train(config, args):
         model.train()
         
         epoch_loss = 0.0
-        epoch_contrastive_loss = 0.0
         num_batches = 0
         
         for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', disable=True if args.tqdm_mode == 'disabled' else False)):
@@ -352,13 +350,8 @@ def train(config, args):
                     # Calculate main loss
                     loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
                     
-                    # Add contrastive loss if exists
                     total_loss = loss
-                    if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-                        contrastive_weight = config.get('contrastive_weight', 0.1)
-                        if isinstance(model.contrastive_loss, torch.Tensor):
-                            total_loss = loss + contrastive_weight * model.contrastive_loss
-                            epoch_contrastive_loss += model.contrastive_loss.item()
+ 
                 
                 # Backward pass (AMP)
                 optimizer.zero_grad()
@@ -376,13 +369,8 @@ def train(config, args):
                 # Calculate main loss
                 loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
                 
-                # Add contrastive loss if exists
                 total_loss = loss
-                if hasattr(model, 'contrastive_loss') and model.contrastive_loss is not None:
-                    contrastive_weight = config.get('contrastive_weight', 0.1)
-                    if isinstance(model.contrastive_loss, torch.Tensor):
-                        total_loss = loss + contrastive_weight * model.contrastive_loss
-                        epoch_contrastive_loss += model.contrastive_loss.item()
+
                 
                 # Backward pass
                 optimizer.zero_grad()
@@ -396,17 +384,15 @@ def train(config, args):
         
         # Calculate average loss
         avg_loss = epoch_loss / num_batches if num_batches > 0 else 0.0
-        avg_contrastive = epoch_contrastive_loss / num_batches if num_batches > 0 else 0.0
         
-        print(f"Epoch {epoch} - Train Loss: {avg_loss:.6f}, Contrastive Loss: {avg_contrastive:.6f}")
-        
+        print(f"Epoch {epoch} - Train Loss: {avg_loss:.6f}")
+
         # Log to SwanLab
         log_dict = {
             "train/loss": avg_loss,
             "train/lr": optimizer.param_groups[0]['lr']
         }
-        if avg_contrastive > 0:
-            log_dict["train/contrastive_loss"] = avg_contrastive
+
         if SWANLAB_AVAILABLE:
             swanlab.log(log_dict, step=epoch)
         

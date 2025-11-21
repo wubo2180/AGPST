@@ -73,6 +73,13 @@ fusion_type: 'gated'  # Options: 'gated', 'concat', 'cross_attn'
 # Advanced features
 use_positional_encoding: True  # Add positional encoding
 use_layer_norm: True  # Use layer normalization
+# --------------------- Denoise Settings ---------------------
+use_denoising: False  # Enable denoising for input data
+denoise_type: 'conv'  # Options: 'conv', 'attention'
+                       # 'conv': 1D convolutional denoiser (fast)
+                       # 'attention': Attention-based denoiser (slower but effective)
+                       # 'conv' is recommended for speed and effectiveness.
+                       # 'attention' can be used for more complex scenarios.
 
 # --------------------- Adaptive Graph Learning ---------------------
 # These parameters are used for spatial encoding
@@ -81,24 +88,7 @@ graph_heads: 4
 dim: 10  # Node embedding dimension
 topK: 10  # Top-K sparsification for graph
 
-# --------------------- GraphWaveNet Backend ---------------------
-# Keep for compatibility, but alternating architecture doesn't use GraphWaveNet
-backend_args:
-    num_nodes: 325
-    supports: ''
-    dropout: 0.3
-    gcn_bool: True
-    addaptadj: True
-    aptinit: null
-    in_dim: 1
-    out_dim: 12
-    residual_channels: 32
-    dilation_channels: 32
-    skip_channels: 256
-    end_channels: 512
-    kernel_size: 2
-    blocks: 4
-    layers: 2
+
 
 # --------------------- Evaluation Metrics ---------------------
 metrics:
