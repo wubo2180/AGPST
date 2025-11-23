@@ -350,6 +350,7 @@ class AlternatingSTModel(nn.Module):
         fusion_type='gated',
         dropout=0.05,
         use_denoising=True,
+        denoise_type='conv',
         **kwargs
     ):
         super().__init__()
@@ -359,6 +360,7 @@ class AlternatingSTModel(nn.Module):
         self.out_steps = out_steps
         self.embed_dim = embed_dim
         self.use_denoising = use_denoising
+        self.denoise_type = denoise_type
         
         # ============ 输入嵌入 ============
         self.input_embedding = nn.Sequential(
@@ -369,11 +371,24 @@ class AlternatingSTModel(nn.Module):
         
         # ============ 去噪模块 (可选) ============
         if use_denoising:
-            self.denoise = nn.Sequential(
-                nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
-                nn.GELU(),
-                nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
-            )
+            if denoise_type == 'conv':
+                # 卷积去噪 (快速,适合局部噪声)
+                self.denoise = nn.Sequential(
+                    nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
+                    nn.GELU(),
+                    nn.Conv1d(embed_dim, embed_dim, kernel_size=3, padding=1),
+                )
+            elif denoise_type == 'attention':
+                # 注意力去噪 (更强大,适合复杂噪声模式)
+                self.denoise = nn.MultiheadAttention(
+                    embed_dim=embed_dim,
+                    num_heads=num_heads,
+                    dropout=dropout,
+                    batch_first=True
+                )
+                self.denoise_norm = nn.LayerNorm(embed_dim)
+            else:
+                raise ValueError(f"Unknown denoise_type: {denoise_type}. Choose 'conv' or 'attention'.")
         
         # ============ Stage 1: 初级特征提取 ============
         self.temporal_encoder_1 = TemporalEncoder(
@@ -485,13 +500,27 @@ class AlternatingSTModel(nn.Module):
         
         # ============ 去噪 (可选) ============
         if self.use_denoising:
-            # (B, N, T, D) → (B*N, D, T)
-            x_denoise = x.reshape(B * N, T, self.embed_dim).transpose(1, 2)
-            # Conv1d 去噪
-            x_denoise = self.denoise(x_denoise)
-            # 残差连接
-            x_denoise = x_denoise.transpose(1, 2).reshape(B, N, T, self.embed_dim)
-            x = x + x_denoise
+            if self.denoise_type == 'conv':
+                # 卷积去噪 (快速)
+                # (B, N, T, D) → (B*N, D, T)
+                x_denoise = x.reshape(B * N, T, self.embed_dim).transpose(1, 2)
+                # Conv1d 去噪
+                x_denoise = self.denoise(x_denoise)
+                # 残差连接: (B*N, D, T) → (B*N, T, D) → (B, N, T, D)
+                x_denoise = x_denoise.transpose(1, 2).reshape(B, N, T, self.embed_dim)
+                x = x + x_denoise
+                
+            elif self.denoise_type == 'attention':
+                # 注意力去噪 (更强大)
+                # (B, N, T, D) → (B*N, T, D)
+                x_denoise = x.reshape(B * N, T, self.embed_dim)
+                # Self-Attention 去噪
+                x_denoise_attn, _ = self.denoise(x_denoise, x_denoise, x_denoise)
+                # 残差连接 + 归一化
+                x_denoise = self.denoise_norm(x_denoise + x_denoise_attn)
+                # (B*N, T, D) → (B, N, T, D)
+                x_denoise = x_denoise.reshape(B, N, T, self.embed_dim)
+                x = x + x_denoise
         
         # ============ Stage 1: 初级特征提取 ============
         # 时间编码

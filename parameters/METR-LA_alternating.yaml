@@ -32,19 +32,29 @@ local: True
 epochs: 100
 batch_size: 32
 lr: 0.001  # 初始学习率
-weight_decay: 0.0005  # L2 正则化
+weight_decay: 0.0005  # L2 正则化 (防止过拟合)
 eps: 0.001
 evaluation_horizons: 12
 
-# Learning Rate Scheduler - MultiStepLR (简单有效)
-milestones: [30, 60, 90]  # 在这些 epoch 降低学习率
-lr_decay_rate: 0.1  # 每次衰减为原来的 0.1 倍
+# 🔥 Learning Rate Scheduler - 优化版 ReduceLROnPlateau
+# 相比原配置的改进:
+#   1. patience: 5 → 10 (更保守,不会过早衰减)
+#   2. factor: 0.5 → 0.5 (保持,也可改为 0.7 更温和)
+#   3. 添加 min_lr: 1e-6 (防止学习率降为 0)
+lr_patience: 10        # 验证损失 10 个 epoch 不改进才衰减 (原来是 5)
+lr_decay_factor: 0.5   # 每次衰减为原来的 0.5 倍 (可改为 0.7 更温和)
+min_lr: 1e-6          # 最小学习率保护,防止降到 0
 # 
-# 学习率变化:
-#   Epoch 0-29:  lr = 0.001
-#   Epoch 30-59: lr = 0.0001 (×0.1)
-#   Epoch 60-89: lr = 0.00001 (×0.1)
-#   Epoch 90+:   lr = 0.000001 (×0.1)
+# 工作原理:
+#   - 监控验证损失 (val_loss)
+#   - 如果连续 10 个 epoch 验证损失不下降
+#   - 学习率 = 学习率 × 0.5
+#   - 但不会低于 min_lr = 1e-6
+# 
+# 预期学习率变化 (相比原配置):
+#   原配置: ~20 epoch 时 lr → 接近 0 (过早)
+#   新配置: ~30-40 epoch 首次衰减 (更合理)
+#            后续根据验证损失自适应调整
 
 # Gradient clipping
 train:

@@ -351,18 +351,21 @@ def train(config, args):
         print(f"{'='*60}\n")
     
     # Learning rate scheduler
-    # 使用标准的 MultiStepLR (简单有效)
-    scheduler = optim.lr_scheduler.MultiStepLR(
+    # 🔥 优化版 ReduceLROnPlateau (更保守的参数)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        milestones=config.get("milestones", [30, 60]),
-        gamma=config.get("lr_decay_rate", 0.1)
+        mode='min',
+        factor=config.get('lr_decay_factor', 0.5),      # 衰减因子 (默认 0.5)
+        patience=config.get('lr_patience', 10),          # 耐心值 (默认 10,原来是 5)
+        min_lr=config.get('min_lr', 1e-6)               # 最小学习率
     )
     
     print(f"\n{'='*60}")
-    print(f"📊 Learning Rate Scheduler: MultiStepLR")
+    print(f"📊 Learning Rate Scheduler: ReduceLROnPlateau")
     print(f"  - Initial LR: {config['lr']}")
-    print(f"  - Milestones: {config.get('milestones', [30, 60])}")
-    print(f"  - Decay Rate: {config.get('lr_decay_rate', 0.1)}")
+    print(f"  - Patience: {config.get('lr_patience', 10)} epochs")
+    print(f"  - Decay Factor: {config.get('lr_decay_factor', 0.5)}")
+    print(f"  - Min LR: {config.get('min_lr', 1e-6)}")
     print(f"{'='*60}\n")
     
     best_val_loss = float('inf')
@@ -448,12 +451,12 @@ def train(config, args):
         val_loss = validate(val_data_loader, model, config, val_scaler, epoch, args)
         
         # Learning rate scheduling
-        # MultiStepLR 每个 epoch 自动调用
-        scheduler.step()
+        # ReduceLROnPlateau 根据验证损失自适应调整
+        scheduler.step(val_loss)
         
         # 打印学习率变化
         current_lr = optimizer.param_groups[0]['lr']
-        if epoch % 10 == 0 or epoch in config.get('milestones', []):
+        if epoch % 10 == 0:
             print(f"📊 Current Learning Rate: {current_lr:.2e}")
         
         # Save best model
