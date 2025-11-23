@@ -13,6 +13,7 @@ from torch.utils.data import  DataLoader
 from torch.amp import autocast
 from torch.amp.grad_scaler import GradScaler  # Mixed Precision Training
 from basicts.utils import load_adj, load_pkl
+from basicts.utils.lr_scheduler import get_scheduler  # 🔥 新增学习率调度器
 
 from basicts.data import BasicTSForecastingDataset
 from basicts.mask.model import AGPSTModel
@@ -350,7 +351,19 @@ def train(config, args):
         print(f"{'='*60}\n")
     
     # Learning rate scheduler
-    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
+    # 使用标准的 MultiStepLR (简单有效)
+    scheduler = optim.lr_scheduler.MultiStepLR(
+        optimizer,
+        milestones=config.get("milestones", [30, 60]),
+        gamma=config.get("lr_decay_rate", 0.1)
+    )
+    
+    print(f"\n{'='*60}")
+    print(f"📊 Learning Rate Scheduler: MultiStepLR")
+    print(f"  - Initial LR: {config['lr']}")
+    print(f"  - Milestones: {config.get('milestones', [30, 60])}")
+    print(f"  - Decay Rate: {config.get('lr_decay_rate', 0.1)}")
+    print(f"{'='*60}\n")
     
     best_val_loss = float('inf')
     
@@ -435,7 +448,13 @@ def train(config, args):
         val_loss = validate(val_data_loader, model, config, val_scaler, epoch, args)
         
         # Learning rate scheduling
-        scheduler.step(val_loss)
+        # MultiStepLR 每个 epoch 自动调用
+        scheduler.step()
+        
+        # 打印学习率变化
+        current_lr = optimizer.param_groups[0]['lr']
+        if epoch % 10 == 0 or epoch in config.get('milestones', []):
+            print(f"📊 Current Learning Rate: {current_lr:.2e}")
         
         # Save best model
         if val_loss < best_val_loss:

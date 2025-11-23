@@ -31,10 +31,20 @@ local: True
 # --------------------- Training Configuration ---------------------
 epochs: 100
 batch_size: 32
-lr: 0.0005
-weight_decay: 0.0001
+lr: 0.001  # 初始学习率
+weight_decay: 0.0005  # L2 正则化
 eps: 0.001
 evaluation_horizons: 12
+
+# Learning Rate Scheduler - MultiStepLR (简单有效)
+milestones: [30, 60, 90]  # 在这些 epoch 降低学习率
+lr_decay_rate: 0.1  # 每次衰减为原来的 0.1 倍
+# 
+# 学习率变化:
+#   Epoch 0-29:  lr = 0.001
+#   Epoch 30-59: lr = 0.0001 (×0.1)
+#   Epoch 60-89: lr = 0.00001 (×0.1)
+#   Epoch 90+:   lr = 0.000001 (×0.1)
 
 # Gradient clipping
 train:
