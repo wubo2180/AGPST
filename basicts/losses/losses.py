@@ -45,3 +45,100 @@ def sce_loss(preds, labels, alpha=3, null_val: float = np.nan):
     loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
     # loss = loss.mean()
     return torch.mean(loss)
+
+
+def huber_loss(preds, labels, delta=1.0, null_val: float = np.nan):
+    """
+    Huber Loss - 借鉴 HimNet 设计
+    
+    特点:
+    - 小误差区域 (|error| <= delta): 使用 L2 损失 (平滑梯度)
+    - 大误差区域 (|error| > delta): 使用 L1 损失 (对异常值鲁棒)
+    
+    Args:
+        preds: 预测值 (B, T, N, C)
+        labels: 真实值 (B, T, N, C)
+        delta: 阈值,控制 L1/L2 切换点
+        null_val: 无效值
+    
+    Returns:
+        loss: Huber 损失
+    """
+    # 掩码处理
+    if np.isnan(null_val):
+        mask = ~torch.isnan(labels)
+    else:
+        eps = 5e-5
+        mask = ~torch.isclose(labels, torch.tensor(null_val).expand_as(labels).to(labels.device), atol=eps, rtol=0.)
+    
+    mask = mask.float()
+    mask /= torch.mean(mask)
+    mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+    
+    # 计算误差
+    error = torch.abs(preds - labels)
+    
+    # Huber 损失分段函数
+    # 小误差: 0.5 * error^2
+    quadratic = 0.5 * error ** 2
+    
+    # 大误差: delta * (error - 0.5*delta)
+    linear = delta * (error - 0.5 * delta)
+    
+    # 根据阈值选择
+    loss = torch.where(error <= delta, quadratic, linear)
+    
+    # 应用掩码
+    loss = loss * mask
+    loss = torch.where(torch.isnan(loss), torch.zeros_like(loss), loss)
+    
+    return torch.mean(loss)
+
+
+def hybrid_loss(preds, labels, null_val: float = np.nan, 
+                alpha=0.5, beta=0.3, gamma=0.2, delta=1.0):
+    """
+    混合损失函数 - 结合多个损失的优点
+    
+    Loss = alpha * Huber + beta * MAE + gamma * MAPE
+    
+    Args:
+        preds: 预测值
+        labels: 真实值
+        null_val: 无效值
+        alpha: Huber 权重 (鲁棒性)
+        beta: MAE 权重 (绝对误差)
+        gamma: MAPE 权重 (相对误差)
+        delta: Huber 阈值
+    
+    Returns:
+        loss: 混合损失
+    """
+    # 掩码
+    if np.isnan(null_val):
+        mask = ~torch.isnan(labels)
+    else:
+        eps = 5e-5
+        mask = ~torch.isclose(labels, torch.tensor(null_val).expand_as(labels).to(labels.device), atol=eps, rtol=0.)
+    
+    mask = mask.float()
+    mask /= torch.mean(mask)
+    mask = torch.where(torch.isnan(mask), torch.zeros_like(mask), mask)
+    
+    # 1. Huber Loss
+    error = torch.abs(preds - labels)
+    quadratic = 0.5 * error ** 2
+    linear = delta * (error - 0.5 * delta)
+    huber = torch.where(error <= delta, quadratic, linear)
+    huber = (huber * mask).mean()
+    
+    # 2. MAE
+    mae = (torch.abs(preds - labels) * mask).mean()
+    
+    # 3. MAPE
+    mape = (torch.abs((preds - labels) / (labels + 1e-5)) * mask).mean()
+    
+    # 混合
+    loss = alpha * huber + beta * mae + gamma * mape
+    
+    return loss

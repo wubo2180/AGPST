@@ -18,6 +18,7 @@ from basicts.data import BasicTSForecastingDataset
 from basicts.mask.model import AGPSTModel
 from basicts.mask.alternating_st import AlternatingSTModel
 from basicts.mask.alternating_st_phase2 import AlternatingSTModel_Phase2
+from basicts.mask.alternating_st_phase3 import AlternatingSTModel_Phase3
 from basicts.scaler import ZScoreScaler
 
 from basicts.metrics import masked_mae, masked_rmse, masked_mape
@@ -292,12 +293,26 @@ def train(config, args):
             input_dim=config['in_channel'],
             embed_dim=config.get('embed_dim', 96),
             num_heads=config.get('num_heads', 4),
-            temporal_depth=config.get('temporal_depth', 2),
             spatial_depth=config.get('spatial_depth', 2),
             fusion_type=config.get('fusion_type', 'gated'),
             dropout=config.get('dropout', 0.05),
             use_denoising=config.get('use_denoising', True)
         )
+    elif model_name == 'AlternatingSTModel_Phase3':
+        # Phase 3 alternating spatio-temporal architecture with multi-scale patches
+        print(f"\n{'='*60}")
+        print("🚀 Using Phase 3 Alternating Spatio-Temporal Architecture with Multi-Scale Patches!")
+        print(f"{'='*60}")
+        model = AlternatingSTModel_Phase3(
+            num_nodes=config['num_nodes'],
+            in_steps=config['input_len'],
+            out_steps=config['output_len'],
+            input_dim=config['in_channel'],
+            embed_dim=config.get('embed_dim', 96),
+            num_heads=config.get('num_heads', 4),
+            patch_sizes=config.get('patch_sizes', [1, 2, 3]),
+            dropout=config.get('dropout', 0.05),
+            )
     else:
         # Original AGPST architecture
         print(f"\n{'='*60}")
@@ -524,7 +539,7 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/PEMS03_alternating.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--config', default='./parameters/PEMS03_alternating_optimized.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
     parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')

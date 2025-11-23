@@ -1,0 +1,149 @@
+# ============================================================================
+# Alternating Spatio-Temporal Architecture - HimNet Inspired Version
+# Dataset: PEMS03 (358 nodes)
+# Model: AlternatingSTModel_HimNet
+# 
+# 🎯 Key Innovations from HimNet 🎯
+# 1. Heterogeneity-Aware Node Embedding (节点异质性嵌入)
+# 2. GCN + Transformer Hybrid Spatial Encoder (混合空间编码)
+# 3. Improved Gated Fusion (改进的门控融合)
+# 4. Huber Loss for Robustness (鲁棒损失函数)
+# ============================================================================
+
+# --------------------- Basic Information ---------------------
+description: 'AlternatingST with HimNet Insights: Node Heterogeneity + GCN Hybrid'
+model_name: 'AlternatingSTModel_HimNet'
+dataset_name: "PEMS03"
+dataset_type: "Traffic speed"
+mode: train
+
+# --------------------- Device Configuration ---------------------
+device: 'cuda'
+gpu_num: 1
+
+# --------------------- Dataset Configuration ---------------------
+dataset_dir: 'datasets/'
+adj_dir: 'datasets/PEMS03/adj_mx.pkl'
+input_len: 12
+output_len: 12
+num_nodes: 358
+use_timestamps: False
+norm_each_channel: True
+rescale: False
+memmap: False
+local: True
+
+# --------------------- Training Configuration ---------------------
+epochs: 150
+batch_size: 32
+lr: 0.0005
+weight_decay: 0.0003
+eps: 0.001
+evaluation_horizons: 12
+
+# Gradient clipping
+train:
+    clip_grad_param:
+        max_norm: 5.0
+    null_val: 0.0
+
+# --------------------- Architecture Configuration ---------------------
+# Feature configuration
+in_channel: 1
+froward_features: [0]
+target_features: [0]
+
+# Core architecture parameters
+embed_dim: 96
+dropout: 0.12
+num_heads: 4
+mlp_ratio: 4
+
+# 🔥 INNOVATION 1: Asymmetric Depth (from Phase 1 Optimized)
+temporal_depth_1: 1  # Stage 1 shallow
+spatial_depth_1: 1
+temporal_depth_2: 3  # Stage 2 deep
+spatial_depth_2: 3
+
+# Decoder configuration
+decoder_depth: 2
+num_decoder_queries: 24
+
+# 🔥 INNOVATION 2: Fusion Type
+fusion_type: 'gated_cross_attn'  # Enhanced fusion with gate + cross-attention
+
+# Advanced features
+use_positional_encoding: True
+use_layer_norm: True
+
+# 🔥 INNOVATION 3: HimNet-Inspired Features
+# Node heterogeneity embedding
+d_meta: 64  # Meta embedding dimension for each node
+              # Total params: 358 nodes × 64 = 22,912 params (negligible)
+
+# GCN + Transformer hybrid
+use_gcn: True  # Enable graph convolution branch
+                # Uses adjacency matrix from adj_dir
+
+# --------------------- Loss Configuration ---------------------
+# 🔥 INNOVATION 4: Huber Loss (from HimNet)
+loss: 'huber_loss'  # Options: 'masked_mae', 'huber_loss', 'hybrid_loss'
+huber_delta: 1.0    # Threshold for Huber loss (L2 → L1 transition)
+
+# If using hybrid_loss:
+# hybrid_alpha: 0.5  # Huber weight
+# hybrid_beta: 0.3   # MAE weight
+# hybrid_gamma: 0.2  # MAPE weight
+
+# --------------------- Denoise Settings ---------------------
+use_denoising: False  # Disabled for simplicity
+
+# --------------------- Adaptive Graph Learning ---------------------
+use_advanced_graph: True
+graph_heads: 4
+dim: 10
+topK: 10
+
+# --------------------- Evaluation Metrics ---------------------
+metrics:
+    MAE: "masked_mae"
+    RMSE: "masked_rmse"
+    MAPE: "masked_mape"
+
+# --------------------- Optimization ---------------------
+use_amp: False  # Mixed precision (optional)
+
+# --------------------- Model Saving ---------------------
+save_model: True
+model_save_path: 'checkpoints/PEMS03_AlternatingST_HimNet/'
+
+# --------------------- 实验说明 ---------------------
+# Expected Improvements:
+# 1. Node heterogeneity: 3-5% MAE reduction
+#    - Different nodes (highways vs urban roads) have different patterns
+#    - Meta embedding allows personalized attention weights
+# 
+# 2. GCN + Transformer: 5-8% MAE reduction
+#    - GCN: Utilizes physical adjacency matrix (prior knowledge)
+#    - Transformer: Learns semantic relationships (flexible)
+#    - Hybrid: Best of both worlds
+# 
+# 3. Huber Loss: 2-5% robustness gain
+#    - Smooth gradients for small errors (L2)
+#    - Robust to outliers for large errors (L1)
+# 
+# Total Expected Improvement: 10-18%
+# Baseline: MAE ~5.4 @ 10 epochs
+# Target: MAE ~4.5-4.8 @ 10 epochs
+# Full training (150 epochs): MAE < 4.0 (competitive with SOTA)
+
+# --------------------- Parameter Count ---------------------
+# Phase 1 Baseline: ~1.23M params
+# HimNet Version: ~1.28M params
+# Increase: +50k params (4% increase)
+# 
+# Breakdown of new params:
+# - Node embeddings: 358 × 64 = 22,912
+# - GCN layers: 2 × (96 × 96) = 18,432
+# - Meta projections: 2 × (64 × 96) = 12,288
+# Total: ~53k params

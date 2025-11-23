@@ -57,7 +57,7 @@ target_features: [0]
 # ============ Alternating Architecture Parameters ============
 
 # Embedding
-embed_dim: 96           # Feature dimension
+embed_dim: 64           # Feature dimension
 
 # Stage 1: Primary feature extraction
 temporal_depth_1: 2     # Number of layers in first temporal encoder
@@ -71,14 +71,14 @@ spatial_depth_2: 2      # Number of layers in second spatial encoder
 num_heads: 4            # Number of attention heads
 
 # Fusion
-fusion_type: 'gated'    # Fusion method: 'gated', 'concat', 'cross_attn'
+fusion_type: 'cross_attn'    # Fusion method: 'gated', 'concat', 'cross_attn'
                         # Recommended: gated (good performance + stability)
 
 # Regularization
 dropout: 0.05           # Dropout rate
 
 # --------------------- Denoise Settings ---------------------
-use_denoising: False  # Enable denoising for input data
+use_denoising: True  # Enable denoising for input data
 denoise_type: 'conv'  # Options: 'conv', 'attention'
                        # 'conv': 1D convolutional denoiser (fast)
                        # 'attention': Attention-based denoiser (slower but effective)

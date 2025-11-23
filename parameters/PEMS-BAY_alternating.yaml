@@ -49,7 +49,7 @@ froward_features: [0]
 target_features: [0]
 
 # Core architecture parameters
-embed_dim: 96  # Feature dimension
+embed_dim: 64  # Feature dimension
 dropout: 0.1
 num_heads: 4
 mlp_ratio: 4
@@ -67,7 +67,7 @@ temporal_depth_2: 2  # Depth of second temporal encoder
 spatial_depth_2: 2   # Depth of second spatial encoder
 
 # Fusion mechanism
-fusion_type: 'gated'  # Options: 'gated', 'concat', 'cross_attn'
+fusion_type: 'cross_attn'  # Options: 'gated', 'concat', 'cross_attn'
 # 'gated': Learnable gates α·temporal + (1-α)·spatial (default, more stable)
 # 'concat': Simple concatenation + projection (faster but less expressive)
 # 'cross_attn': Cross-attention between temporal and spatial (most powerful but slower)
@@ -115,8 +115,8 @@ log_dir: 'logs/PEMS-BAY_AlternatingST/'
 # Input: (B, N=325, T=12, D=1)
 # 
 # Stage 1:
-#   TemporalEncoder1: (B, N, T, D) → (B, N, T, embed_dim=96)
-#   SpatialEncoder1:  (B, N, T, D) → (B, N, T, embed_dim=96)
+#   TemporalEncoder1: (B, N, T, D) → (B, N, T, embed_dim=64)
+#   SpatialEncoder1:  (B, N, T, D) → (B, N, T, embed_dim=64)
 #   FusionLayer1:     Fuses temporal & spatial features
 #
 # STDecoder:
