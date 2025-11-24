@@ -1,0 +1,54 @@
+# 消融实验: 仅嵌入层 (Embedding Only)
+
+dataset:
+  name: 'PEMS03'
+  data_path: 'datasets/PEMS03'
+  num_nodes: 358
+
+model:
+  num_nodes: 358
+  in_steps: 12
+  out_steps: 12
+  input_dim: 1
+  embed_dim: 96
+  num_heads: 4
+  
+  # === 消融: 禁用所有编码器 ===
+  use_temporal_encoder: False  # ❌ 禁用时间编码器
+  use_spatial_encoder: False   # ❌ 禁用空间编码器
+  use_stage2: False            # ❌ 禁用第二阶段
+  
+  # 仅使用嵌入 + 输出投影
+  
+  # 去噪
+  use_denoising: True
+  denoise_type: 'conv'
+  
+  dropout: 0.05
+
+train:
+  batch_size: 64
+  epochs: 100
+  optimizer: 'Adam'
+  lr: 0.001
+  weight_decay: 0.0005
+  lr_patience: 10
+  lr_decay_factor: 0.5
+  min_lr: 1e-6
+  early_stop_patience: 20
+  loss: 'MAE'
+  clip_grad: 1.0
+
+val:
+  batch_size: 64
+  metrics: ['MAE', 'RMSE', 'MAPE']
+
+log:
+  save_dir: 'checkpoints/PEMS03/ablation/embedding_only'
+  log_interval: 10
+  val_interval: 1
+
+misc:
+  seed: 42
+  num_workers: 4
+  device: 'cuda'

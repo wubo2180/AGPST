@@ -13,6 +13,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+from .spatial_encoders import (
+    TransformerSpatialEncoder,
+    GCNSpatialEncoder,
+    ChebNetSpatialEncoder,
+    GATSpatialEncoder,
+    HybridSpatialEncoder
+)
 
 
 class TemporalEncoder(nn.Module):
@@ -351,6 +358,12 @@ class AlternatingSTModel(nn.Module):
         dropout=0.05,
         use_denoising=True,
         denoise_type='conv',
+        spatial_encoder_type='hybrid',  # 新增: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
+        gnn_K=3,  # ChebNet 的 K 值
+        # === 消融实验开关 ===
+        use_temporal_encoder=True,  # 是否使用时间编码器
+        use_spatial_encoder=True,   # 是否使用空间编码器
+        use_stage2=True,            # 是否使用第二阶段编码
         **kwargs
     ):
         super().__init__()
@@ -361,6 +374,12 @@ class AlternatingSTModel(nn.Module):
         self.embed_dim = embed_dim
         self.use_denoising = use_denoising
         self.denoise_type = denoise_type
+        self.spatial_encoder_type = spatial_encoder_type
+        
+        # 消融实验开关
+        self.use_temporal_encoder = use_temporal_encoder
+        self.use_spatial_encoder = use_spatial_encoder
+        self.use_stage2 = use_stage2
         
         # ============ 输入嵌入 ============
         self.input_embedding = nn.Sequential(
@@ -391,55 +410,87 @@ class AlternatingSTModel(nn.Module):
                 raise ValueError(f"Unknown denoise_type: {denoise_type}. Choose 'conv' or 'attention'.")
         
         # ============ Stage 1: 初级特征提取 ============
-        self.temporal_encoder_1 = TemporalEncoder(
-            d_model=embed_dim,
-            num_heads=num_heads,
-            num_layers=temporal_depth_1,
-            dropout=dropout
-        )
+        # 时间编码器 (可选)
+        if use_temporal_encoder:
+            self.temporal_encoder_1 = TemporalEncoder(
+                d_model=embed_dim,
+                num_heads=num_heads,
+                num_layers=temporal_depth_1,
+                dropout=dropout
+            )
+        else:
+            self.temporal_encoder_1 = None
         
-        self.spatial_encoder_1 = SpatialEncoder(
-            num_nodes=num_nodes,
-            d_model=embed_dim,
-            num_heads=num_heads,
-            num_layers=spatial_depth_1,
-            dropout=dropout
-        )
+        # 空间编码器 (可选,支持多种类型)
+        if use_spatial_encoder:
+            self.spatial_encoder_1 = self._create_spatial_encoder(
+                spatial_encoder_type,
+                num_nodes=num_nodes,
+                d_model=embed_dim,
+                num_heads=num_heads,
+                num_layers=spatial_depth_1,
+                dropout=dropout,
+                gnn_K=gnn_K
+            )
+        else:
+            self.spatial_encoder_1 = None
         
-        self.fusion_1 = FusionLayer(
-            d_model=embed_dim,
-            fusion_type=fusion_type,
-            dropout=dropout
-        )
+        # 融合层 (仅当两个编码器都启用时才需要)
+        if use_temporal_encoder and use_spatial_encoder:
+            self.fusion_1 = FusionLayer(
+                d_model=embed_dim,
+                fusion_type=fusion_type,
+                dropout=dropout
+            )
+        else:
+            self.fusion_1 = None
         
         # ============ Decoder: 特征解构 ============
-        self.st_decoder = STDecoder(
-            d_model=embed_dim,
-            num_heads=num_heads,
-            dropout=dropout
-        )
+        # 仅当使用第二阶段时才需要解码器
+        if use_stage2:
+            self.st_decoder = STDecoder(
+                d_model=embed_dim,
+                num_heads=num_heads,
+                dropout=dropout
+            )
+        else:
+            self.st_decoder = None
         
         # ============ Stage 2: 深层特征精炼 ============
-        self.temporal_encoder_2 = TemporalEncoder(
-            d_model=embed_dim,
-            num_heads=num_heads,
-            num_layers=temporal_depth_2,
-            dropout=dropout
-        )
+        # 时间编码器 (可选)
+        if use_stage2 and use_temporal_encoder:
+            self.temporal_encoder_2 = TemporalEncoder(
+                d_model=embed_dim,
+                num_heads=num_heads,
+                num_layers=temporal_depth_2,
+                dropout=dropout
+            )
+        else:
+            self.temporal_encoder_2 = None
         
-        self.spatial_encoder_2 = SpatialEncoder(
-            num_nodes=num_nodes,
-            d_model=embed_dim,
-            num_heads=num_heads,
-            num_layers=spatial_depth_2,
-            dropout=dropout
-        )
+        # 空间编码器 (可选)
+        if use_stage2 and use_spatial_encoder:
+            self.spatial_encoder_2 = self._create_spatial_encoder(
+                spatial_encoder_type,
+                num_nodes=num_nodes,
+                d_model=embed_dim,
+                num_heads=num_heads,
+                num_layers=spatial_depth_2,
+                dropout=dropout,
+                gnn_K=gnn_K
+            )
+        else:
+            self.spatial_encoder_2 = None
         
-        self.fusion_2 = FusionLayer(
-            d_model=embed_dim,
-            fusion_type=fusion_type,
-            dropout=dropout
-        )
+        # 融合层 (仅当两个编码器都启用时才需要)
+        if use_stage2 and use_temporal_encoder and use_spatial_encoder:
+            self.fusion_2 = FusionLayer(
+                d_model=embed_dim,
+                fusion_type=fusion_type,
+                dropout=dropout
+            )
+        else:
+            self.fusion_2 = None
         
         # ============ 输出投影 ============
         # 首先调整时间维度: in_steps → out_steps
@@ -473,10 +524,66 @@ class AlternatingSTModel(nn.Module):
         
         return pos_encoding.unsqueeze(0).unsqueeze(0)  # (1, 1, T, D)
     
-    def forward(self, history_data, **kwargs):
+    def _create_spatial_encoder(self, encoder_type, num_nodes, d_model, num_heads, num_layers, dropout, gnn_K):
+        """
+        创建指定类型的空间编码器
+        
+        Args:
+            encoder_type: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
+            其他参数: 编码器配置
+        Returns:
+            SpatialEncoder 实例
+        """
+        if encoder_type == 'transformer':
+            return TransformerSpatialEncoder(
+                num_nodes=num_nodes,
+                d_model=d_model,
+                num_heads=num_heads,
+                num_layers=num_layers,
+                dropout=dropout
+            )
+        elif encoder_type == 'gcn':
+            return GCNSpatialEncoder(
+                num_nodes=num_nodes,
+                d_model=d_model,
+                num_layers=num_layers,
+                dropout=dropout
+            )
+        elif encoder_type == 'chebnet':
+            return ChebNetSpatialEncoder(
+                num_nodes=num_nodes,
+                d_model=d_model,
+                num_layers=num_layers,
+                K=gnn_K,
+                dropout=dropout
+            )
+        elif encoder_type == 'gat':
+            return GATSpatialEncoder(
+                num_nodes=num_nodes,
+                d_model=d_model,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                dropout=dropout
+            )
+        elif encoder_type == 'hybrid':
+            return HybridSpatialEncoder(
+                num_nodes=num_nodes,
+                d_model=d_model,
+                num_gnn_layers=1,
+                num_transformer_layers=1,
+                num_heads=num_heads,
+                dropout=dropout,
+                gnn_type='gcn'  # 默认使用 GCN
+            )
+        else:
+            raise ValueError(f"Unknown spatial_encoder_type: {encoder_type}. "
+                           f"Choose from ['transformer', 'gcn', 'chebnet', 'gat', 'hybrid']")
+    
+    def forward(self, history_data, adj_mx=None, **kwargs):
         """
         Args:
             history_data: (B, T, N, C) 或 (B, N, T, C)
+            adj_mx: (N, N) - 邻接矩阵或拉普拉斯矩阵 (用于 GNN)
         Returns:
             prediction: (B, T_future, N, 1)
         """
@@ -523,27 +630,66 @@ class AlternatingSTModel(nn.Module):
                 x = x + x_denoise
         
         # ============ Stage 1: 初级特征提取 ============
-        # 时间编码
-        temporal_feat_1 = self.temporal_encoder_1(x)  # (B, N, T, D)
+        # 时间编码 (可选)
+        if self.use_temporal_encoder and self.temporal_encoder_1 is not None:
+            temporal_feat_1 = self.temporal_encoder_1(x)  # (B, N, T, D)
+        else:
+            temporal_feat_1 = x  # 直接使用输入
         
-        # 空间编码
-        spatial_feat_1 = self.spatial_encoder_1(x)  # (B, N, T, D)
+        # 空间编码 (可选)
+        if self.use_spatial_encoder and self.spatial_encoder_1 is not None:
+            spatial_feat_1 = self.spatial_encoder_1(x, adj_mx)  # (B, N, T, D)
+        else:
+            spatial_feat_1 = x  # 直接使用输入
         
-        # 融合
-        fused_1 = self.fusion_1(temporal_feat_1, spatial_feat_1)  # (B, N, T, D)
+        # 融合 (根据启用的编码器类型)
+        if self.use_temporal_encoder and self.use_spatial_encoder and self.fusion_1 is not None:
+            # 两个编码器都启用: 融合两者
+            fused_1 = self.fusion_1(temporal_feat_1, spatial_feat_1)  # (B, N, T, D)
+        elif self.use_temporal_encoder:
+            # 仅时间编码器
+            fused_1 = temporal_feat_1
+        elif self.use_spatial_encoder:
+            # 仅空间编码器
+            fused_1 = spatial_feat_1
+        else:
+            # 两者都不启用: 直接使用嵌入
+            fused_1 = x
         
         # ============ Decoder: 特征解构 ============
-        temporal_component, spatial_component = self.st_decoder(fused_1)
+        if self.use_stage2 and self.st_decoder is not None:
+            temporal_component, spatial_component = self.st_decoder(fused_1)
+        else:
+            # 不使用第二阶段: 直接使用 Stage 1 的输出
+            temporal_component = fused_1
+            spatial_component = fused_1
         
         # ============ Stage 2: 深层特征精炼 ============
-        # 时间再编码 (使用解构的时间分量)
-        temporal_feat_2 = self.temporal_encoder_2(temporal_component)  # (B, N, T, D)
-        
-        # 空间再编码 (使用解构的空间分量)
-        spatial_feat_2 = self.spatial_encoder_2(spatial_component)  # (B, N, T, D)
-        
-        # 最终融合
-        fused_2 = self.fusion_2(temporal_feat_2, spatial_feat_2)  # (B, N, T, D)
+        if self.use_stage2:
+            # 时间再编码 (可选)
+            if self.use_temporal_encoder and self.temporal_encoder_2 is not None:
+                temporal_feat_2 = self.temporal_encoder_2(temporal_component)  # (B, N, T, D)
+            else:
+                temporal_feat_2 = temporal_component
+            
+            # 空间再编码 (可选)
+            if self.use_spatial_encoder and self.spatial_encoder_2 is not None:
+                spatial_feat_2 = self.spatial_encoder_2(spatial_component, adj_mx)  # (B, N, T, D)
+            else:
+                spatial_feat_2 = spatial_component
+            
+            # 最终融合 (根据启用的编码器类型)
+            if self.use_temporal_encoder and self.use_spatial_encoder and self.fusion_2 is not None:
+                fused_2 = self.fusion_2(temporal_feat_2, spatial_feat_2)  # (B, N, T, D)
+            elif self.use_temporal_encoder:
+                fused_2 = temporal_feat_2
+            elif self.use_spatial_encoder:
+                fused_2 = spatial_feat_2
+            else:
+                fused_2 = fused_1  # 回退到 Stage 1
+        else:
+            # 不使用第二阶段: 直接使用 Stage 1 的融合结果
+            fused_2 = fused_1
         
         # ============ 输出投影 ============
         # 调整时间维度: (B, N, T, D) → (B, N, T_future, D)

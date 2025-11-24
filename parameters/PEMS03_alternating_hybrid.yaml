@@ -1,0 +1,96 @@
+# PEMS03 Alternating ST Model - Hybrid Spatial Encoder (推荐配置)
+
+# ============ 数据集配置 ============
+dataset:
+  name: 'PEMS03'
+  data_path: 'datasets/PEMS03'
+  num_nodes: 358
+  train_ratio: 0.7
+  val_ratio: 0.1
+  test_ratio: 0.2
+
+# ============ 模型配置 ============
+model:
+  # 基础配置
+  num_nodes: 358
+  in_steps: 12
+  out_steps: 12
+  input_dim: 1
+  embed_dim: 96
+  num_heads: 4
+  
+  # 时间编码器深度 (每个阶段)
+  temporal_depth_1: 2  # 第一阶段时间编码器层数
+  temporal_depth_2: 2  # 第二阶段时间编码器层数
+  
+  # 空间编码器深度 (每个阶段)
+  spatial_depth_1: 1  # 第一阶段空间编码器层数 (Hybrid 推荐 1)
+  spatial_depth_2: 1  # 第二阶段空间编码器层数
+  
+  # ========== 空间编码器类型 (核心!) ==========
+  # 选项: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
+  spatial_encoder_type: 'hybrid'  # 推荐! (GNN + Transformer 混合)
+  
+  # ChebNet 专用参数 (仅当 type='chebnet' 时生效)
+  gnn_K: 3  # Chebyshev 多项式阶数 (控制 K-hop 邻域)
+  
+  # 融合方式
+  fusion_type: 'gated'  # 'concat', 'gated', 'cross_attn'
+  
+  # 去噪模块
+  use_denoising: True
+  denoise_type: 'conv'  # 'conv' (快速), 'attention' (强大)
+  
+  # 正则化
+  dropout: 0.05
+
+# ============ 训练配置 ============
+train:
+  batch_size: 64
+  epochs: 100
+  
+  # 优化器
+  optimizer: 'Adam'
+  lr: 0.001
+  weight_decay: 0.0005
+  
+  # 学习率调度 (ReduceLROnPlateau - 优化版)
+  lr_patience: 10      # 性能不提升的 epoch 数 (保守)
+  lr_decay_factor: 0.5 # 衰减因子
+  min_lr: 1e-6        # 最小学习率 (防止 lr→0)
+  
+  # 早停
+  early_stop_patience: 20
+  
+  # 损失函数
+  loss: 'MAE'  # 'MAE', 'MSE', 'Huber'
+  
+  # 梯度裁剪 (Hybrid 推荐)
+  clip_grad: 1.0
+  
+  # 混合精度训练 (可选,加速 30%)
+  use_amp: False
+
+# ============ 验证配置 ============
+val:
+  batch_size: 64
+  metrics: ['MAE', 'RMSE', 'MAPE']
+
+# ============ 测试配置 ============
+test:
+  batch_size: 64
+  metrics: ['MAE', 'RMSE', 'MAPE']
+
+# ============ 日志配置 ============
+log:
+  save_dir: 'checkpoints/PEMS03'
+  log_interval: 10  # 每 10 个 batch 打印一次
+  val_interval: 1   # 每 1 个 epoch 验证一次
+  save_best: True   # 保存最优模型
+  save_interval: 10 # 每 10 个 epoch 保存一次
+
+# ============ 其他配置 ============
+misc:
+  seed: 42
+  num_workers: 4
+  device: 'cuda'  # 'cuda' or 'cpu'

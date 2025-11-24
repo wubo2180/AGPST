@@ -1,0 +1,63 @@
+# 消融实验: 无第二阶段 (w/o Stage 2)
+
+dataset:
+  name: 'PEMS03'
+  data_path: 'datasets/PEMS03'
+  num_nodes: 358
+
+model:
+  num_nodes: 358
+  in_steps: 12
+  out_steps: 12
+  input_dim: 1
+  embed_dim: 96
+  num_heads: 4
+  
+  # === 消融: 禁用第二阶段 ===
+  use_temporal_encoder: True   # ✅ 时间编码器
+  use_spatial_encoder: True    # ✅ 空间编码器
+  use_stage2: False            # ❌ 禁用第二阶段 (仅 Stage 1)
+  
+  # Stage 1 编码器深度
+  temporal_depth_1: 2
+  spatial_depth_1: 1
+  
+  # 空间编码器类型
+  spatial_encoder_type: 'hybrid'
+  gnn_K: 3
+  
+  # 融合方式
+  fusion_type: 'gated'
+  
+  # 去噪
+  use_denoising: True
+  denoise_type: 'conv'
+  
+  dropout: 0.05
+
+train:
+  batch_size: 64
+  epochs: 100
+  optimizer: 'Adam'
+  lr: 0.001
+  weight_decay: 0.0005
+  lr_patience: 10
+  lr_decay_factor: 0.5
+  min_lr: 1e-6
+  early_stop_patience: 20
+  loss: 'MAE'
+  clip_grad: 1.0
+
+val:
+  batch_size: 64
+  metrics: ['MAE', 'RMSE', 'MAPE']
+
+log:
+  save_dir: 'checkpoints/PEMS03/ablation/wo_stage2'
+  log_interval: 10
+  val_interval: 1
+
+misc:
+  seed: 42
+  num_workers: 4
+  device: 'cuda'
