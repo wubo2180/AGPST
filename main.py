@@ -20,6 +20,71 @@ from basicts.scaler import ZScoreScaler
 
 from basicts.metrics import masked_mae, masked_rmse, masked_mape
 metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
+
+
+def count_model_parameters(model, verbose=True):
+    """
+    Count model parameters and print detailed statistics
+    
+    Args:
+        model: PyTorch model
+        verbose: Whether to print detailed module-wise statistics
+    
+    Returns:
+        dict: Statistics including total, trainable, and frozen parameters
+    """
+    total_params = 0
+    trainable_params = 0
+    frozen_params = 0
+    
+    module_stats = {}
+    
+    for name, param in model.named_parameters():
+        num_params = param.numel()
+        total_params += num_params
+        
+        if param.requires_grad:
+            trainable_params += num_params
+        else:
+            frozen_params += num_params
+        
+        # Group by module
+        module_name = name.split('.')[0]
+        if module_name not in module_stats:
+            module_stats[module_name] = {'total': 0, 'trainable': 0}
+        module_stats[module_name]['total'] += num_params
+        if param.requires_grad:
+            module_stats[module_name]['trainable'] += num_params
+    
+    if verbose:
+        print(f"\n{'='*80}")
+        print(f"{'📊 Model Parameters Statistics':^80}")
+        print(f"{'='*80}")
+        print(f"{'Module':<40} {'Parameters':>15} {'Trainable':>15} {'%':>8}")
+        print(f"{'-'*80}")
+        
+        for module_name, stats in sorted(module_stats.items(), key=lambda x: x[1]['total'], reverse=True):
+            percentage = stats['total'] / total_params * 100
+            print(f"{module_name:<40} {stats['total']:>15,} {stats['trainable']:>15,} {percentage:>7.2f}%")
+        
+        print(f"{'-'*80}")
+        print(f"{'TOTAL':<40} {total_params:>15,} {trainable_params:>15,} {'100.00%':>8}")
+        print(f"{'='*80}")
+        print(f"  Total Parameters:     {total_params:>15,}")
+        print(f"  Trainable Parameters: {trainable_params:>15,}")
+        print(f"  Frozen Parameters:    {frozen_params:>15,}")
+        print(f"  Model Size (FP32):    {total_params * 4 / 1024 / 1024:>14.2f} MB")
+        print(f"  Model Size (FP16):    {total_params * 2 / 1024 / 1024:>14.2f} MB")
+        print(f"{'='*80}\n")
+    
+    return {
+        'total': total_params,
+        'trainable': trainable_params,
+        'frozen': frozen_params,
+        'modules': module_stats
+    }
+
+
 try:
     import swanlab
     SWANLAB_AVAILABLE = True
