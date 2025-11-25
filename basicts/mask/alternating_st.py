@@ -20,6 +20,10 @@ from .spatial_encoders import (
     GATSpatialEncoder,
     HybridSpatialEncoder
 )
+from .temporal_encoding import (
+    CyclicPositionalEncoding,
+    AdaptiveMultiScalePositionalEncoding
+)
 
 
 class TemporalEncoder(nn.Module):
@@ -358,8 +362,9 @@ class AlternatingSTModel(nn.Module):
         dropout=0.05,
         use_denoising=True,
         denoise_type='conv',
-        spatial_encoder_type='hybrid',  # 新增: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
+        spatial_encoder_type='gcn',  # 新增: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
         gnn_K=3,  # ChebNet 的 K 值
+        pe_type='adaptive',  # 位置编码类型: 'cyclic', 'adaptive'
         # === 消融实验开关 ===
         use_temporal_encoder=True,  # 是否使用时间编码器
         use_spatial_encoder=True,   # 是否使用空间编码器
@@ -374,6 +379,7 @@ class AlternatingSTModel(nn.Module):
         self.embed_dim = embed_dim
         self.use_denoising = use_denoising
         self.denoise_type = denoise_type
+        self.pe_type = pe_type
         self.spatial_encoder_type = spatial_encoder_type
         
         # 消融实验开关
@@ -507,22 +513,25 @@ class AlternatingSTModel(nn.Module):
         )
         
         # ============ 位置编码 ============
-        self.register_buffer(
-            'positional_encoding',
-            self._get_sinusoidal_encoding(in_steps, embed_dim)
-        )
-        
-    def _get_sinusoidal_encoding(self, seq_len, d_model):
-        """生成固定的 sin/cos 位置编码"""
-        position = torch.arange(seq_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2, dtype=torch.float) * 
-                            -(math.log(10000.0) / d_model))
-        
-        pos_encoding = torch.zeros(seq_len, d_model)
-        pos_encoding[:, 0::2] = torch.sin(position * div_term)
-        pos_encoding[:, 1::2] = torch.cos(position * div_term)
-        
-        return pos_encoding.unsqueeze(0).unsqueeze(0)  # (1, 1, T, D)
+        # 支持多种位置编码类型
+        if pe_type == 'cyclic':
+            # 周期性位置编码（显式建模日/周周期）
+            self.pos_encoder = CyclicPositionalEncoding(
+                embed_dim=embed_dim,
+                max_len=in_steps,
+                dropout=dropout
+            )
+        elif pe_type == 'adaptive':
+            # 自适应多尺度位置编码（自动学习周期，推荐）
+            self.pos_encoder = AdaptiveMultiScalePositionalEncoding(
+                embed_dim=embed_dim,
+                max_len=in_steps,
+                num_scales=8,
+                learnable=True,
+                dropout=dropout
+            )
+        else:
+            raise ValueError(f"Unknown pe_type: {pe_type}. Choose from ['cyclic', 'adaptive']")
     
     def _create_spatial_encoder(self, encoder_type, num_nodes, d_model, num_heads, num_layers, dropout, gnn_K):
         """
@@ -602,8 +611,8 @@ class AlternatingSTModel(nn.Module):
         # (B, N, T, C) → (B, N, T, D)
         x = self.input_embedding(x)
         
-        # 添加位置编码
-        x = x + self.positional_encoding[:, :, :T, :]
+        # 添加自适应位置编码
+        x = self.pos_encoder(x)
         
         # ============ 去噪 (可选) ============
         if self.use_denoising:

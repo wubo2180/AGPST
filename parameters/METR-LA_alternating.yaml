@@ -31,30 +31,30 @@ local: True
 # --------------------- Training Configuration ---------------------
 epochs: 100
 batch_size: 32
-lr: 0.001  # 初始学习率
-weight_decay: 0.0005  # L2 正则化 (防止过拟合)
+lr: 0.001  # Initial learning rate
+weight_decay: 0.0005  # L2 regularization (prevent overfitting)
 eps: 0.001
 evaluation_horizons: 12
 
-# 🔥 Learning Rate Scheduler - 优化版 ReduceLROnPlateau
-# 相比原配置的改进:
-#   1. patience: 5 → 10 (更保守,不会过早衰减)
-#   2. factor: 0.5 → 0.5 (保持,也可改为 0.7 更温和)
-#   3. 添加 min_lr: 1e-6 (防止学习率降为 0)
-lr_patience: 10        # 验证损失 10 个 epoch 不改进才衰减 (原来是 5)
-lr_decay_factor: 0.5   # 每次衰减为原来的 0.5 倍 (可改为 0.7 更温和)
-min_lr: 1e-6          # 最小学习率保护,防止降到 0
+# 🔥 Learning Rate Scheduler - Optimized ReduceLROnPlateau
+# Improvements over original configuration:
+#   1. patience: 5 → 10 (more conservative, avoids premature decay)
+#   2. factor: 0.5 → 0.5 (keep, can use 0.7 for gentler decay)
+#   3. Added min_lr: 0.000001 (prevents learning rate from dropping to 0)
+lr_patience: 10        # Decay LR if val loss doesn't improve for 10 epochs (was 5)
+lr_decay_factor: 0.5   # Decay by factor of 0.5 each time (can use 0.7 for gentler)
+min_lr: 0.000001       # Minimum learning rate protection (1e-6), prevents dropping to 0
 # 
-# 工作原理:
-#   - 监控验证损失 (val_loss)
-#   - 如果连续 10 个 epoch 验证损失不下降
-#   - 学习率 = 学习率 × 0.5
-#   - 但不会低于 min_lr = 1e-6
+# How it works:
+#   - Monitors validation loss (val_loss)
+#   - If val loss doesn't decrease for 10 consecutive epochs
+#   - Learning rate = learning rate × 0.5
+#   - But will not go below min_lr = 0.000001
 # 
-# 预期学习率变化 (相比原配置):
-#   原配置: ~20 epoch 时 lr → 接近 0 (过早)
-#   新配置: ~30-40 epoch 首次衰减 (更合理)
-#            后续根据验证损失自适应调整
+# Expected LR schedule (compared to original):
+#   Original: lr → near 0 around epoch 20 (too early)
+#   New: First decay around epoch 30-40 (more reasonable)
+#        Subsequent adaptive adjustments based on val loss
 
 # Gradient clipping
 train:
@@ -65,15 +65,13 @@ train:
 # --------------------- Alternating ST Architecture ---------------------
 # Feature configuration
 in_channel: 1
-froward_features: [0]
-target_features: [0]
 
 # Core architecture parameters
 embed_dim: 64  # Feature dimension
 dropout: 0.1
 num_heads: 4
 mlp_ratio: 4
-
+pe_type: 'adaptive'  # Options: 'cyclic', 'adaptive'
 # Stage 1: First temporal-spatial encoding
 temporal_depth_1: 2  # Depth of first temporal encoder
 spatial_depth_1: 2   # Depth of first spatial encoder

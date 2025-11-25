@@ -10,16 +10,12 @@ import functools
 import torch
 import torch.optim as optim
 from torch.utils.data import  DataLoader
-from torch.amp import autocast
-from torch.amp.grad_scaler import GradScaler  # Mixed Precision Training
 from basicts.utils import load_adj, load_pkl
 from basicts.utils.lr_scheduler import get_scheduler  # 🔥 新增学习率调度器
 
 from basicts.data import BasicTSForecastingDataset
-from basicts.mask.model import AGPSTModel
 from basicts.mask.alternating_st import AlternatingSTModel
-from basicts.mask.alternating_st_phase2 import AlternatingSTModel_Phase2
-from basicts.mask.alternating_st_phase3 import AlternatingSTModel_Phase3
+
 from basicts.scaler import ZScoreScaler
 
 from basicts.metrics import masked_mae, masked_rmse, masked_mape
@@ -78,7 +74,7 @@ def metric_forward(metric_func, args):
     return metric_item
 
 
-def validate(val_data_loader, model, config, scaler, epoch, args):
+def validate(val_data_loader, model, adj_mx, config, scaler, epoch, args):
     """Validate model"""
     model.eval()
     
@@ -91,13 +87,11 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
             future_data = data["targets"]
             history_data = scaler.transform(history_data)
             future_data = scaler.transform(future_data)
-            
 
-            
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
             
-            preds = model(history_data)
+            preds = model(history_data, adj_mx)
 
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
@@ -131,7 +125,7 @@ def validate(val_data_loader, model, config, scaler, epoch, args):
     return val_loss
 
 
-def test(test_data_loader, model, config, scaler, epoch, args):
+def test(test_data_loader, model, adj_mx, config, scaler, epoch, args):
     """Test model"""
     model.eval()
     
@@ -148,12 +142,10 @@ def test(test_data_loader, model, config, scaler, epoch, args):
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
 
-            preds = model(history_data)
+            preds = model(history_data, adj_mx)
 
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
-            
-            # Test mode: process only one batch
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
@@ -198,7 +190,7 @@ def train(config, args):
     """
     print('### Start Training with Adaptive Graph ... ###')
     adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
-    
+    print(f'Adjacency matrix shape: {adj_mx[0].shape if isinstance(adj_mx, (list, tuple)) else adj_mx.shape}')
     
     # Initialize scaler
     train_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
@@ -259,97 +251,56 @@ def train(config, args):
     val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
     
-    # Create model - Support multiple architectures
-    model_name = config.get('model_name', 'AGPST')
-    
-    if model_name == 'AlternatingSTModel':
-        # New alternating spatio-temporal architecture
-        print(f"\n{'='*60}")
-        print("🚀 Using Alternating Spatio-Temporal Architecture!")
-        print(f"{'='*60}")
-        model = AlternatingSTModel(
-            num_nodes=config['num_nodes'],
-            in_steps=config['input_len'],
-            out_steps=config['output_len'],
-            input_dim=config['in_channel'],
-            embed_dim=config.get('embed_dim', 96),
-            num_heads=config.get('num_heads', 4),
-            temporal_depth_1=config.get('temporal_depth_1', 2),
-            spatial_depth_1=config.get('spatial_depth_1', 2),
-            temporal_depth_2=config.get('temporal_depth_2', 2),
-            spatial_depth_2=config.get('spatial_depth_2', 2),
-            fusion_type=config.get('fusion_type', 'gated'),
-            dropout=config.get('dropout', 0.05),
-            use_denoising=config.get('use_denoising', True)
-        )
-    elif model_name == 'AlternatingSTModel_Phase2':
-        # Phase 2 alternating spatio-temporal architecture
-        print(f"\n{'='*60}")
-        print("🚀 Using Phase 2 Alternating Spatio-Temporal Architecture!")
-        print(f"{'='*60}")
-        model = AlternatingSTModel_Phase2(
-            num_nodes=config['num_nodes'],
-            in_steps=config['input_len'],
-            out_steps=config['output_len'],
-            input_dim=config['in_channel'],
-            embed_dim=config.get('embed_dim', 96),
-            num_heads=config.get('num_heads', 4),
-            spatial_depth=config.get('spatial_depth', 2),
-            fusion_type=config.get('fusion_type', 'gated'),
-            dropout=config.get('dropout', 0.05),
-            use_denoising=config.get('use_denoising', True)
-        )
-    elif model_name == 'AlternatingSTModel_Phase3':
-        # Phase 3 alternating spatio-temporal architecture with multi-scale patches
-        print(f"\n{'='*60}")
-        print("🚀 Using Phase 3 Alternating Spatio-Temporal Architecture with Multi-Scale Patches!")
-        print(f"{'='*60}")
-        model = AlternatingSTModel_Phase3(
-            num_nodes=config['num_nodes'],
-            in_steps=config['input_len'],
-            out_steps=config['output_len'],
-            input_dim=config['in_channel'],
-            embed_dim=config.get('embed_dim', 96),
-            num_heads=config.get('num_heads', 4),
-            patch_sizes=config.get('patch_sizes', [1, 2, 3]),
-            dropout=config.get('dropout', 0.05),
-            )
-    else:
-        # Original AGPST architecture
-        print(f"\n{'='*60}")
-        print("Using Original AGPST Architecture")
-        print(f"{'='*60}")
-        model = AGPSTModel(
-            num_nodes=config['num_nodes'],
-            dim=config['dim'],
-            topK=config['topK'],
-            in_channel=config['in_channel'],
-            embed_dim=config['embed_dim'],
-            num_heads=config['num_heads'],
-            mlp_ratio=config['mlp_ratio'],
-            dropout=config['dropout'],
-            encoder_depth=config['encoder_depth'],
-            use_denoising=config.get('use_denoising', True),
-            denoise_type=config.get('denoise_type', 'conv'),
-            use_advanced_graph=config.get('use_advanced_graph', True),
-            graph_heads=config.get('graph_heads', 4),
-            decoder_depth=config.get('decoder_depth', 2),
-            pred_len=config.get('pred_len', 12)
-        )
+    # New alternating spatio-temporal architecture
+    print(f"\n{'='*60}")
+    print("🚀 Using Alternating Spatio-Temporal Architecture!")
+    print(f"{'='*60}")
+    model = AlternatingSTModel(
+        num_nodes=config['num_nodes'],
+        in_steps=config['input_len'],
+        out_steps=config['output_len'],
+        input_dim=config['in_channel'],
+        embed_dim=config.get('embed_dim', 96),
+        num_heads=config.get('num_heads', 4),
+        temporal_depth_1=config.get('temporal_depth_1', 2),
+        spatial_depth_1=config.get('spatial_depth_1', 2),
+        temporal_depth_2=config.get('temporal_depth_2', 2),
+        spatial_depth_2=config.get('spatial_depth_2', 2),
+        fusion_type=config.get('fusion_type', 'gated'),
+        dropout=config.get('dropout', 0.05),
+        use_spatial_encoder=config.get('use_spatial_encoder', True),
+        spatial_encoder_type=config.get('spatial_encoder_type', 'gcn'),
+        # gnn_K=config.get('gnn_K', 3),
+        use_temporal_encoder=config.get('use_temporal_encoder', True),
+        use_stage2=config.get('use_stage2', True),
+        use_denoising=config.get('use_denoising', True),
+        denoise_type=config.get('denoise_type', 'conv'),
+        
+        
+    )
+
     model = model.to(args.device)
+    
+    # Print model parameters
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\n{'='*60}")
+    print(f"📊 Model Parameters Statistics")
+    print(f"{'='*60}")
+    print(f"  Total Parameters:     {total_params:,}")
+    print(f"  Trainable Parameters: {trainable_params:,}")
+    print(f"  Model Size:           {total_params * 4 / 1024 / 1024:.2f} MB (FP32)")
+    print(f"{'='*60}\n")
+    
+    # Convert adjacency matrix to PyTorch tensor
+    if isinstance(adj_mx, (list, tuple)):
+        adj_mx = adj_mx[0]
+    # Convert numpy matrix/array to PyTorch tensor
+    adj_mx = torch.FloatTensor(np.array(adj_mx)).to(args.device)
     
     # Optimizer
     optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=config['weight_decay'], eps=config['eps'])
-    
-    # Mixed Precision Training GradScaler
-    use_amp = config.get('use_amp', False)
-    scaler = GradScaler('cuda') if use_amp else None
-    if use_amp:
-        print(f"\n{'='*60}")
-        print("⚡ Mixed Precision Training (AMP) Enabled!")
-        print("Expected speedup: 30-50%")
-        print(f"{'='*60}\n")
-    
+
     # Learning rate scheduler
     # 🔥 优化版 ReduceLROnPlateau (更保守的参数)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
@@ -381,52 +332,25 @@ def train(config, args):
 
             history_data = data["inputs"]
             future_data = data["targets"]
-            # print(f"Original history_data shape: {history_data.shape}, future_data shape: {future_data.shape}")
             history_data = train_scaler.transform(history_data)
             future_data = train_scaler.transform(future_data)
 
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
-            # print(f"history_data shape: {history_data.shape}, labels shape: {labels.shape}")
+            preds = model(history_data, adj_mx)
+            prediction_rescaled = train_scaler.inverse_transform(preds)
+            real_value_rescaled = train_scaler.inverse_transform(labels)
             
-            # Mixed Precision Training - Forward Pass
-            if use_amp:
-                with autocast(device_type='cuda', dtype=torch.float16):
-                    # Forward pass
-                    preds = model(history_data)
-                    prediction_rescaled = train_scaler.inverse_transform(preds)
-                    real_value_rescaled = train_scaler.inverse_transform(labels)
-                    
-                    # Calculate main loss
-                    loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
-                    
-                    total_loss = loss
- 
-                
-                # Backward pass (AMP)
-                optimizer.zero_grad()
-                scaler.scale(total_loss).backward()
-                scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                # Original training loop (without AMP)
-                preds = model(history_data)
-                prediction_rescaled = train_scaler.inverse_transform(preds)
-                real_value_rescaled = train_scaler.inverse_transform(labels)
-                
-                # Calculate main loss
-                loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
-                
-                total_loss = loss
+            # Calculate main loss
+            loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
+            
+            total_loss = loss
 
-                
-                # Backward pass
-                optimizer.zero_grad()
-                total_loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
-                optimizer.step()
+            # Backward pass
+            optimizer.zero_grad()
+            total_loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+            optimizer.step()
             
             epoch_loss += loss.item()
             num_batches += 1
@@ -448,7 +372,7 @@ def train(config, args):
         
         # Validation
         print('============ Validation ============')
-        val_loss = validate(val_data_loader, model, config, val_scaler, epoch, args)
+        val_loss = validate(val_data_loader, model, adj_mx, config, val_scaler, epoch, args)
         
         # Learning rate scheduling
         # ReduceLROnPlateau 根据验证损失自适应调整
@@ -471,7 +395,7 @@ def train(config, args):
         
         # Test
         print('============ Test ============')
-        test(test_data_loader, model, config, test_scaler, epoch, args)
+        test(test_data_loader, model, adj_mx, config, test_scaler, epoch, args)
     
     print(f"\n🎉 Training completed! Best validation loss: {best_val_loss:.6f}")
 
@@ -481,12 +405,8 @@ def main(config, args):
     model_name = config.get('model_name', 'AGPST')
     dataset_name = config['dataset_name']
     
-    if model_name == 'AlternatingSTModel':
-        fusion_type = config.get('fusion_type', 'gated')
-        experiment_name = f"{dataset_name}_AlternatingST_{fusion_type}_lr{config['lr']}_bs{config['batch_size']}"
-    else:
-        experiment_name = f"{dataset_name}_AGPST_lr{config['lr']}_bs{config['batch_size']}"
-    
+    fusion_type = config.get('fusion_type', 'gated')
+    experiment_name = f"{dataset_name}_AlternatingST_{fusion_type}_lr{config['lr']}_bs{config['batch_size']}"
     if SWANLAB_AVAILABLE:
         # Build comprehensive config for SwanLab
         swanlab_config = {
@@ -512,26 +432,18 @@ def main(config, args):
             "dropout": config.get('dropout', 0.05),
             
             # Optimization
-            "use_amp": config.get('use_amp', False),
             "use_denoising": config.get('use_denoising', True),
         }
         
         # Add architecture-specific config
-        if model_name == 'AlternatingSTModel':
-            swanlab_config.update({
-                "temporal_depth_1": config.get('temporal_depth_1', 2),
-                "spatial_depth_1": config.get('spatial_depth_1', 2),
-                "temporal_depth_2": config.get('temporal_depth_2', 2),
-                "spatial_depth_2": config.get('spatial_depth_2', 2),
-                "fusion_type": config.get('fusion_type', 'gated'),
-            })
-        else:
-            swanlab_config.update({
-                "encoder_depth": config.get('encoder_depth', 4),
-                "decoder_depth": config.get('decoder_depth', 1),
-                "denoise_type": config.get('denoise_type', 'conv'),
-            })
-        
+        swanlab_config.update({
+            "temporal_depth_1": config.get('temporal_depth_1', 2),
+            "spatial_depth_1": config.get('spatial_depth_1', 2),
+            "temporal_depth_2": config.get('temporal_depth_2', 2),
+            "spatial_depth_2": config.get('spatial_depth_2', 2),
+            "fusion_type": config.get('fusion_type', 'gated'),
+        })
+    
         swanlab.init(
             project="AGPST-forecasting",
             experiment_name=experiment_name,
@@ -543,10 +455,6 @@ def main(config, args):
 
     if SWANLAB_AVAILABLE:
         swanlab.finish()
-
-
-
-
 
 def seed_torch(seed=0):
     random.seed(seed)
@@ -561,15 +469,14 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/PEMS03_alternating_optimized.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--config', default='./parameters/METR-LA_alternating.yaml', type=str, help='Path to the YAML config file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
     parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')
-    
-    
+
     args = parser.parse_args()
     
-    with open(args.config, 'r') as f:
+    with open(args.config, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     seed_torch(seed=0)
     main(config, args)

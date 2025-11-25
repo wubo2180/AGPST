@@ -123,7 +123,7 @@ class GraphConvLayer(nn.Module):
         # 先转置: (B, N, D_out) → (B, D_out, N)
         support = support.transpose(1, 2)
         # 矩阵乘法: (B, D_out, N) @ (N, N) = (B, D_out, N)
-        output = torch.matmul(support, adj.t())
+        output = torch.matmul(support, adj)
         # 转回: (B, D_out, N) → (B, N, D_out)
         output = output.transpose(1, 2)
         

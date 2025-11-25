@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
-from .graph_learning import DynamicGraphConv
+from .graph_learning import AdaptiveGraphLearner
 
 
 def get_sinusoidal_encoding(seq_len, d_model):
@@ -135,7 +135,7 @@ class AGPSTModel(nn.Module):
         
         # 3. 自适应图学习
         if use_advanced_graph:
-            self.dynamic_graph_conv = DynamicGraphConv(
+            self.dynamic_graph_conv = AdaptiveGraphLearner(
                 embed_dim=embed_dim,
                 num_nodes=num_nodes,
                 node_dim=dim,
