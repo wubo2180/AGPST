@@ -1,6 +1,8 @@
 import torch
-from torch import nn
+import torch.nn as nn
 import torch.nn.functional as F
+from torch.autograd import Variable
+import sys
 
 
 class nconv(nn.Module):
@@ -8,11 +10,7 @@ class nconv(nn.Module):
         super(nconv,self).__init__()
 
     def forward(self,x, A):
-        A = A.to(x.device)
-        if len(A.shape) == 3:
-            x = torch.einsum('ncvl,nvw->ncwl',(x,A))
-        else:
-            x = torch.einsum('ncvl,vw->ncwl',(x,A))
+        x = torch.einsum('ncvl,vw->ncwl',(x,A))
         return x.contiguous()
 
 class linear(nn.Module):
@@ -47,15 +45,9 @@ class gcn(nn.Module):
         h = F.dropout(h, self.dropout, training=self.training)
         return h
 
+
 class GraphWaveNet(nn.Module):
-    """
-        Paper: Graph WaveNet for Deep Spatial-Temporal Graph Modeling.
-        Link: https://arxiv.org/abs/1906.00121
-        Ref Official Code: https://github.com/nnzhan/Graph-WaveNet/blob/master/model.py
-    """
-
-    def __init__(self, num_nodes, supports, dropout=0.3, gcn_bool=True, addaptadj=True, aptinit=None, in_dim=2,out_dim=12,residual_channels=32,dilation_channels=32,skip_channels=256,end_channels=512,kernel_size=2,blocks=4,layers=2, **kwargs):
-
+    def __init__(self, device, num_nodes, dropout=0.3, supports=None, gcn_bool=True, addaptadj=True, aptinit=None, in_dim=2,out_dim=12,residual_channels=32,dilation_channels=32,skip_channels=256,end_channels=512,kernel_size=2,blocks=4,layers=2):
         super(GraphWaveNet, self).__init__()
         self.dropout = dropout
         self.blocks = blocks
@@ -69,9 +61,10 @@ class GraphWaveNet(nn.Module):
         self.skip_convs = nn.ModuleList()
         self.bn = nn.ModuleList()
         self.gconv = nn.ModuleList()
-        self.fc_his_t = nn.Sequential(nn.Linear(96, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU())
-        self.fc_his_s = nn.Sequential(nn.Linear(96, 512), nn.ReLU(), nn.Linear(512, 256), nn.ReLU())
-        self.start_conv = nn.Conv2d(in_channels=in_dim, out_channels=residual_channels, kernel_size=(1,1))
+
+        self.start_conv = nn.Conv2d(in_channels=in_dim,
+                                    out_channels=residual_channels,
+                                    kernel_size=(1,1))
         self.supports = supports
 
         receptive_field = 1
@@ -84,8 +77,8 @@ class GraphWaveNet(nn.Module):
             if aptinit is None:
                 if supports is None:
                     self.supports = []
-                self.nodevec1 = nn.Parameter(torch.randn(num_nodes, 10), requires_grad=True)
-                self.nodevec2 = nn.Parameter(torch.randn(10, num_nodes), requires_grad=True)
+                self.nodevec1 = nn.Parameter(torch.randn(num_nodes, 10).to(device), requires_grad=True).to(device)
+                self.nodevec2 = nn.Parameter(torch.randn(10, num_nodes).to(device), requires_grad=True).to(device)
                 self.supports_len +=1
             else:
                 if supports is None:
@@ -93,53 +86,59 @@ class GraphWaveNet(nn.Module):
                 m, p, n = torch.svd(aptinit)
                 initemb1 = torch.mm(m[:, :10], torch.diag(p[:10] ** 0.5))
                 initemb2 = torch.mm(torch.diag(p[:10] ** 0.5), n[:, :10].t())
-                self.nodevec1 = nn.Parameter(initemb1, requires_grad=True)
-                self.nodevec2 = nn.Parameter(initemb2, requires_grad=True)
+                self.nodevec1 = nn.Parameter(initemb1, requires_grad=True).to(device)
+                self.nodevec2 = nn.Parameter(initemb2, requires_grad=True).to(device)
                 self.supports_len += 1
+
+
+
 
         for b in range(blocks):
             additional_scope = kernel_size - 1
             new_dilation = 1
             for i in range(layers):
                 # dilated convolutions
-                self.filter_convs.append(nn.Conv2d(in_channels=residual_channels, out_channels=dilation_channels, kernel_size=(1,kernel_size),dilation=new_dilation))
+                self.filter_convs.append(nn.Conv2d(in_channels=residual_channels,
+                                                   out_channels=dilation_channels,
+                                                   kernel_size=(1,kernel_size),dilation=new_dilation))
 
-                self.gate_convs.append(nn.Conv2d(in_channels=residual_channels, out_channels=dilation_channels, kernel_size=(1, kernel_size), dilation=new_dilation))
+                self.gate_convs.append(nn.Conv1d(in_channels=residual_channels,
+                                                 out_channels=dilation_channels,
+                                                 kernel_size=(1, kernel_size), dilation=new_dilation))
 
                 # 1x1 convolution for residual connection
-                self.residual_convs.append(nn.Conv2d(in_channels=dilation_channels, out_channels=residual_channels, kernel_size=(1, 1)))
+                self.residual_convs.append(nn.Conv1d(in_channels=dilation_channels,
+                                                     out_channels=residual_channels,
+                                                     kernel_size=(1, 1)))
 
                 # 1x1 convolution for skip connection
-                self.skip_convs.append(nn.Conv2d(in_channels=dilation_channels, out_channels=skip_channels, kernel_size=(1, 1)))
+                self.skip_convs.append(nn.Conv1d(in_channels=dilation_channels,
+                                                 out_channels=skip_channels,
+                                                 kernel_size=(1, 1)))
                 self.bn.append(nn.BatchNorm2d(residual_channels))
-                new_dilation *= 2
+                new_dilation *=2
                 receptive_field += additional_scope
                 additional_scope *= 2
                 if self.gcn_bool:
                     self.gconv.append(gcn(dilation_channels,residual_channels,dropout,support_len=self.supports_len))
 
-        self.end_conv_1 = nn.Conv2d(in_channels=skip_channels, out_channels=end_channels, kernel_size=(1,1), bias=True)
-        self.end_conv_2 = nn.Conv2d(in_channels=end_channels, out_channels=out_dim, kernel_size=(1,1), bias=True)
+
+
+        self.end_conv_1 = nn.Conv2d(in_channels=skip_channels,
+                                  out_channels=end_channels,
+                                  kernel_size=(1,1),
+                                  bias=True)
+
+        self.end_conv_2 = nn.Conv2d(in_channels=end_channels,
+                                    out_channels=out_dim,
+                                    kernel_size=(1,1),
+                                    bias=True)
 
         self.receptive_field = receptive_field
 
 
 
-    def forward(self, input, hidden_states):
-        """feed forward of Graph WaveNet.
-        Args:
-            input (torch.Tensor): input history MTS with shape [B, L, N, C].
-            His (torch.Tensor): the output of TSFormer of the last patch (segment) with shape [B, N, d].
-        Returns:
-            torch.Tensor: prediction with shape [B, N, L]
-        """
-
-        # reshape input: [B, L, N, C] -> [B, C, N, L]
-        input = input.transpose(1, 3)
-        # feed forward
-        input = nn.functional.pad(input,(1,0,0,0))
-
-        input = input[:, :2, :, :]
+    def forward(self, input):
         in_len = input.size(3)
         if in_len<self.receptive_field:
             x = nn.functional.pad(input,(self.receptive_field-in_len,0,0,0))
@@ -148,8 +147,7 @@ class GraphWaveNet(nn.Module):
         x = self.start_conv(x)
         skip = 0
 
-
-        # calculate the current adaptive adj matrix
+        # calculate the current adaptive adj matrix once per iteration
         new_supports = None
         if self.gcn_bool and self.addaptadj and self.supports is not None:
             adp = F.softmax(F.relu(torch.mm(self.nodevec1, self.nodevec2)), dim=1)
@@ -202,17 +200,11 @@ class GraphWaveNet(nn.Module):
 
             x = self.bn[i](x)
 
-        hidden_states_t = self.fc_his_t(hidden_states[:,:,:96])        # B, N, D
-        hidden_states_t = hidden_states_t.transpose(1, 2).unsqueeze(-1)
-        skip = skip + hidden_states_t
-        # hidden_states_s = self.fc_his_s(hidden_states[:,:,96:])        # B, N, D
-        # hidden_states_s = hidden_states_s.transpose(1, 2).unsqueeze(-1)
-        # skip = skip + hidden_states_s        
-        
         x = F.relu(skip)
         x = F.relu(self.end_conv_1(x))
         x = self.end_conv_2(x)
-
-        # reshape output: [B, P, N, 1] -> [B, N, P]
-        x = x.squeeze(-1).transpose(1, 2)
         return x
+
+
+
+

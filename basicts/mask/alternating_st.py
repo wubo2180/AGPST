@@ -24,6 +24,10 @@ from .temporal_encoding import (
     CyclicPositionalEncoding,
     AdaptiveMultiScalePositionalEncoding
 )
+from .signal_decomposition import (
+    DecompositionBasedEncoder,
+    SeriesDecomposition
+)
 
 
 class TemporalEncoder(nn.Module):
@@ -365,6 +369,10 @@ class AlternatingSTModel(nn.Module):
         spatial_encoder_type='gcn',  # 新增: 'transformer', 'gcn', 'chebnet', 'gat', 'hybrid'
         gnn_K=3,  # ChebNet 的 K 值
         pe_type='adaptive',  # 位置编码类型: 'cyclic', 'adaptive'
+        # === 信号分解开关 (新增) ===
+        use_decomposition=False,    # 是否使用信号分解
+        decomp_type='moving_avg',   # 分解类型: 'moving_avg', 'learnable', 'fourier'
+        decomp_kernel_size=25,      # 移动平均窗口大小
         # === 消融实验开关 ===
         use_temporal_encoder=True,  # 是否使用时间编码器
         use_spatial_encoder=True,   # 是否使用空间编码器
@@ -381,6 +389,8 @@ class AlternatingSTModel(nn.Module):
         self.denoise_type = denoise_type
         self.pe_type = pe_type
         self.spatial_encoder_type = spatial_encoder_type
+        self.use_decomposition = use_decomposition
+        self.decomp_type = decomp_type
         
         # 消融实验开关
         self.use_temporal_encoder = use_temporal_encoder
@@ -393,6 +403,19 @@ class AlternatingSTModel(nn.Module):
             nn.GELU(),
             nn.LayerNorm(embed_dim)
         )
+        
+        # ============ 信号分解模块 (可选,新增) ============
+        if use_decomposition:
+            self.decomp_encoder = DecompositionBasedEncoder(
+                decomp_type=decomp_type,
+                embed_dim=embed_dim,
+                num_heads=num_heads,
+                dropout=dropout,
+                input_dim=embed_dim,
+                kernel_size=decomp_kernel_size
+            )
+        else:
+            self.decomp_encoder = None
         
         # ============ 去噪模块 (可选) ============
         if use_denoising:
@@ -606,13 +629,20 @@ class AlternatingSTModel(nn.Module):
             raise ValueError(f"Unexpected input shape: {history_data.shape}")
         
         B, N, T, C = x.shape
-        
         # ============ 输入嵌入 ============
         # (B, N, T, C) → (B, N, T, D)
         x = self.input_embedding(x)
         
         # 添加自适应位置编码
         x = self.pos_encoder(x)
+        
+        # ============ 信号分解 (可选,新增) ============
+        if self.use_decomposition and self.decomp_encoder is not None:
+            # 对嵌入后的信号进行分解和编码
+            x, decomp_components = self.decomp_encoder(x)
+            # decomp_components 包含分解的各个成分，可用于可视化或进一步分析
+        else:
+            decomp_components = None
         
         # ============ 去噪 (可选) ============
         if self.use_denoising:

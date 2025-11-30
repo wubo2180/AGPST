@@ -22,15 +22,15 @@ adj_dir: 'datasets/METR-LA/adj_mx.pkl'
 input_len: 12
 output_len: 12
 num_nodes: 207  # METR-LA has 207 nodes
-use_timestamps: False
-norm_each_channel: True
-rescale: False
+use_timestamps: True
+norm_each_channel: False
+rescale: True
 memmap: False
 local: True
 
 # --------------------- Training Configuration ---------------------
-epochs: 100
-batch_size: 32
+epochs: 200
+batch_size: 64
 lr: 0.001  # Initial learning rate
 weight_decay: 0.0005  # L2 regularization (prevent overfitting)
 eps: 0.001
@@ -64,6 +64,9 @@ train:
 
 # --------------------- Alternating ST Architecture ---------------------
 # Feature configuration
+use_decomposition: True    # 
+decomp_type: learnable   #  'moving_avg', 'learnable', 'fourier'
+decomp_kernel_size: 25
 in_channel: 1
 
 # Core architecture parameters

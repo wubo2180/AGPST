@@ -23,7 +23,7 @@ input_len: 12
 output_len: 12
 num_nodes: 325  # PEMS-BAY has 325 nodes
 use_timestamps: False
-norm_each_channel: True
+norm_each_channel: False
 rescale: False
 memmap: False
 local: True

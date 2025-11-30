@@ -15,9 +15,9 @@ from basicts.utils.lr_scheduler import get_scheduler  # 🔥 新增学习率调�
 
 from basicts.data import BasicTSForecastingDataset
 from basicts.mask.alternating_st import AlternatingSTModel
-
+from basicts.graphwavenet import GraphWaveNet
 from basicts.scaler import ZScoreScaler
-
+# from basicts.lib.data_prepare import get_dataloaders_from_index_data
 from basicts.metrics import masked_mae, masked_rmse, masked_mape
 metrics = {"MAE": masked_mae, "RMSE": masked_rmse, "MAPE": masked_mape}
 
@@ -84,41 +84,12 @@ def count_model_parameters(model, verbose=True):
         'modules': module_stats
     }
 
-
 try:
     import swanlab
     SWANLAB_AVAILABLE = True
 except ImportError:
     SWANLAB_AVAILABLE = False
     print("Warning: swanlab not installed. Logging features will be disabled.")
-
-def collate_fn(batch):
-    """
-    Custom collate function to add channel dimension to data.
-    Converts (B, L, N) to (B, L, N, 1)
-    """
-    inputs = np.array([item['inputs'] for item in batch])
-    targets = np.array([item['targets'] for item in batch])
-    
-    # Add channel dimension if needed
-    if inputs.ndim == 3:  # (B, L, N)
-        inputs = inputs[..., np.newaxis]  # (B, L, N, 1)
-    if targets.ndim == 3:  # (B, L, N)
-        targets = targets[..., np.newaxis]  # (B, L, N, 1)
-    
-    result = {
-        'inputs': torch.from_numpy(inputs).float(),
-        'targets': torch.from_numpy(targets).float()
-    }
-    
-    # Handle timestamps if present
-    if 'inputs_timestamps' in batch[0]:
-        inputs_timestamps = np.array([item['inputs_timestamps'] for item in batch])
-        targets_timestamps = np.array([item['targets_timestamps'] for item in batch])
-        result['inputs_timestamps'] = torch.from_numpy(inputs_timestamps)
-        result['targets_timestamps'] = torch.from_numpy(targets_timestamps)
-    
-    return result
 
 def metric_forward(metric_func, args):
     """Computing metrics.
@@ -139,7 +110,7 @@ def metric_forward(metric_func, args):
     return metric_item
 
 
-def validate(val_data_loader, model, adj_mx, config, scaler, epoch, args):
+def validate(val_data_loader, model, adj_mx, cfg, scaler, epoch, args):
     """Validate model"""
     model.eval()
     
@@ -147,16 +118,17 @@ def validate(val_data_loader, model, adj_mx, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
-            history_data = data["inputs"]
-            future_data = data["targets"]
+        for idx, data in enumerate(tqdm(val_data_loader, desc='Validation', ncols=100)):
+            history_data = data["inputs"].unsqueeze(-1)
+            future_data = data["targets"].unsqueeze(-1)
+
             history_data = scaler.transform(history_data)
-            future_data = scaler.transform(future_data)
 
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
             
             preds = model(history_data, adj_mx)
+            preds = scaler.inverse_transform(preds)
 
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
@@ -164,15 +136,9 @@ def validate(val_data_loader, model, adj_mx, config, scaler, epoch, args):
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
-        
-        # Inverse normalization
-        prediction_rescaled = scaler.inverse_transform(prediction)
-        real_value_rescaled = scaler.inverse_transform(real_value)
-
-        # Calculate metrics
         metric_results = {}
         for metric_name, metric_func in metrics.items():
-            metric_item = metric_forward(metric_func, [prediction_rescaled, real_value_rescaled])
+            metric_item = metric_forward(metric_func, [prediction, real_value])
             metric_results[metric_name] = metric_item.item()
         
         val_loss = metric_results["MAE"]
@@ -190,7 +156,7 @@ def validate(val_data_loader, model, adj_mx, config, scaler, epoch, args):
     return val_loss
 
 
-def test(test_data_loader, model, adj_mx, config, scaler, epoch, args):
+def test(test_data_loader, model, adj_mx, cfg, scaler, epoch, args):
     """Test model"""
     model.eval()
     
@@ -198,29 +164,25 @@ def test(test_data_loader, model, adj_mx, config, scaler, epoch, args):
     real_value = []
     
     with torch.no_grad():
-        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
-            history_data = data["inputs"]
-            future_data = data["targets"]
+        for idx, data in enumerate(tqdm(test_data_loader, desc='Testing', ncols=100)):
+            history_data = data["inputs"].unsqueeze(-1)
+            future_data = data["targets"].unsqueeze(-1)
+
             history_data = scaler.transform(history_data)
-            future_data = scaler.transform(future_data)
-            
+
             labels = future_data.to(args.device)
             history_data = history_data.to(args.device)
 
             preds = model(history_data, adj_mx)
-
+            preds = scaler.inverse_transform(preds)
+            
             prediction.append(preds.detach().cpu())
             real_value.append(labels.detach().cpu())
         
         prediction = torch.cat(prediction, dim=0)
         real_value = torch.cat(real_value, dim=0)
         
-        # Inverse normalization
-        prediction = scaler.inverse_transform(prediction)
-        real_value = scaler.inverse_transform(real_value)
-
-        # Calculate metrics for each horizon
-        for i in range(config['evaluation_horizons']):
+        for i in range(cfg['evaluation_horizons']):
             pred = prediction[:, i, :, :]
             real = real_value[:, i, :, :]
             
@@ -249,101 +211,67 @@ def test(test_data_loader, model, adj_mx, config, scaler, epoch, args):
         logging.info(f"Overall - Test MAE: {metric_results['MAE']:.4f}, Test RMSE: {metric_results['RMSE']:.4f}, Test MAPE: {metric_results['MAPE']:.4f}")
 
 
-def train(config, args):
+def train(cfg, args):
     """
     End-to-end training with adaptive graph learning
     """
     print('### Start Training with Adaptive Graph ... ###')
-    adj_mx, _ = load_adj(config['dataset_name'], "doubletransition")
-    print(f'Adjacency matrix shape: {adj_mx[0].shape if isinstance(adj_mx, (list, tuple)) else adj_mx.shape}')
-    
-    # Initialize scaler
-    train_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
-
-    val_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
-
-    test_scaler = ZScoreScaler(norm_each_channel=config['norm_each_channel'], rescale=config['rescale'])
-
+    adj_mx, _ = load_adj(cfg['dataset_name'], "doubletransition")
+    adj_mx = torch.tensor(adj_mx[0], dtype=torch.float32).to(args.device)
+    print("adj_mx.shape:", adj_mx.shape)
     train_dataset = BasicTSForecastingDataset(
-        dataset_name=config['dataset_name'],
-        input_len=config['input_len'],
-        output_len=config['output_len'],
+        dataset_name=cfg['dataset_name'],
+        input_len=cfg['input_len'],
+        output_len=cfg['output_len'],
         mode='train'
     )
-    
     val_dataset = BasicTSForecastingDataset(
-        dataset_name=config['dataset_name'],
-        input_len=config['input_len'],
-        output_len=config['output_len'],
+        dataset_name=cfg['dataset_name'],
+        input_len=cfg['input_len'],
+        output_len=cfg['output_len'],
         mode='val'
     )
-    
     test_dataset = BasicTSForecastingDataset(
-        dataset_name=config['dataset_name'],
-        input_len=config['input_len'],
-        output_len=config['output_len'],
+        dataset_name=cfg['dataset_name'],
+        input_len=cfg['input_len'],
+        output_len=cfg['output_len'],
         mode='test'
     )
+    scaler = ZScoreScaler(norm_each_channel=cfg['norm_each_channel'], rescale=cfg['rescale'])
+    scaler.fit(train_dataset.data)
 
-    print('Fitting scaler on training data...')
-    # Add channel dimension before fitting: (T, N) -> (T, N, 1)
-    train_data = train_dataset.data
-    if train_data.ndim == 2:
-        train_data = train_data[..., np.newaxis]
-    train_scaler.fit(train_data)
-    print(f'Train scaler - Mean shape: {train_scaler.stats["mean"].shape}, Std shape: {train_scaler.stats["std"].shape}')
-    print(f'Train scaler - Mean: {train_scaler.stats["mean"].mean().item():.4f}, Std: {train_scaler.stats["std"].mean().item():.4f}')
-    
-    # Fit scaler on validation data
-    print('Fitting scaler on validation data...')
-    val_data = val_dataset.data
-    if val_data.ndim == 2:
-        val_data = val_data[..., np.newaxis]
-    val_scaler.fit(val_data)
-    print(f'Val scaler - Mean shape: {val_scaler.stats["mean"].shape}, Std shape: {val_scaler.stats["std"].shape}')
-    print(f'Val scaler - Mean: {val_scaler.stats["mean"].mean().item():.4f}, Std: {val_scaler.stats["std"].mean().item():.4f}')
-    
-    # Fit scaler on test data
-    print('Fitting scaler on test data...')
-    test_data = test_dataset.data
-    if test_data.ndim == 2:
-        test_data = test_data[..., np.newaxis]
-    test_scaler.fit(test_data)
-    print(f'Test scaler - Mean shape: {test_scaler.stats["mean"].shape}, Std shape: {test_scaler.stats["std"].shape}')
-    print(f'Test scaler - Mean: {test_scaler.stats["mean"].mean().item():.4f}, Std: {test_scaler.stats["std"].mean().item():.4f}')
-    
-    train_data_loader = DataLoader(train_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=True, pin_memory=True, collate_fn=collate_fn)
-    val_data_loader = DataLoader(val_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
-    test_data_loader = DataLoader(test_dataset, batch_size=config['batch_size'], num_workers=8, shuffle=False, pin_memory=True, collate_fn=collate_fn)
-    
+    train_data_loader = DataLoader(train_dataset, batch_size=cfg['batch_size'], num_workers=8, shuffle=True, pin_memory=True)
+    val_data_loader = DataLoader(val_dataset, batch_size=cfg['batch_size'], num_workers=8, shuffle=False, pin_memory=True)
+    test_data_loader = DataLoader(test_dataset, batch_size=cfg['batch_size'], num_workers=8, shuffle=False, pin_memory=True)
+
     # New alternating spatio-temporal architecture
     print(f"\n{'='*60}")
     print("🚀 Using Alternating Spatio-Temporal Architecture!")
     print(f"{'='*60}")
     model = AlternatingSTModel(
-        num_nodes=config['num_nodes'],
-        in_steps=config['input_len'],
-        out_steps=config['output_len'],
-        input_dim=config['in_channel'],
-        embed_dim=config.get('embed_dim', 96),
-        num_heads=config.get('num_heads', 4),
-        temporal_depth_1=config.get('temporal_depth_1', 2),
-        spatial_depth_1=config.get('spatial_depth_1', 2),
-        temporal_depth_2=config.get('temporal_depth_2', 2),
-        spatial_depth_2=config.get('spatial_depth_2', 2),
-        fusion_type=config.get('fusion_type', 'gated'),
-        dropout=config.get('dropout', 0.05),
-        use_spatial_encoder=config.get('use_spatial_encoder', True),
-        spatial_encoder_type=config.get('spatial_encoder_type', 'gcn'),
-        # gnn_K=config.get('gnn_K', 3),
-        use_temporal_encoder=config.get('use_temporal_encoder', True),
-        use_stage2=config.get('use_stage2', True),
-        use_denoising=config.get('use_denoising', True),
-        denoise_type=config.get('denoise_type', 'conv'),
-        
-        
+        num_nodes=cfg['num_nodes'],
+        in_steps=cfg['input_len'],
+        out_steps=cfg['output_len'],
+        input_dim=cfg['in_channel'],
+        embed_dim=cfg.get('embed_dim', 96),
+        num_heads=cfg.get('num_heads', 4),
+        temporal_depth_1=cfg.get('temporal_depth_1', 2),
+        spatial_depth_1=cfg.get('spatial_depth_1', 2),
+        temporal_depth_2=cfg.get('temporal_depth_2', 2),
+        spatial_depth_2=cfg.get('spatial_depth_2', 2),
+        fusion_type=cfg.get('fusion_type', 'gated'),
+        dropout=cfg.get('dropout', 0.05),
+        use_spatial_encoder=cfg.get('use_spatial_encoder', True),
+        spatial_encoder_type=cfg.get('spatial_encoder_type', 'gcn'),
+        use_decomposition = cfg.get('use_decomposition', True),
+        decomp_type = cfg.get('decomp_type', 'moving_avg'),
+        decomp_kernel_size = cfg.get('decomp_kernel_size', 25),
+        # gnn_K=cfg.get('gnn_K', 3),
+        use_temporal_encoder=cfg.get('use_temporal_encoder', True),
+        use_stage2=cfg.get('use_stage2', True),
+        use_denoising=cfg.get('use_denoising', True),
+        denoise_type=cfg.get('denoise_type', 'conv'),
     )
-
     model = model.to(args.device)
     
     # Print model parameters
@@ -356,64 +284,46 @@ def train(config, args):
     print(f"  Trainable Parameters: {trainable_params:,}")
     print(f"  Model Size:           {total_params * 4 / 1024 / 1024:.2f} MB (FP32)")
     print(f"{'='*60}\n")
-    
-    # Convert adjacency matrix to PyTorch tensor
-    if isinstance(adj_mx, (list, tuple)):
-        adj_mx = adj_mx[0]
-    # Convert numpy matrix/array to PyTorch tensor
-    adj_mx = torch.FloatTensor(np.array(adj_mx)).to(args.device)
-    
     # Optimizer
-    optimizer = optim.Adam(model.parameters(), config['lr'], weight_decay=config['weight_decay'], eps=config['eps'])
+    optimizer = optim.Adam(model.parameters(), cfg['lr'], weight_decay=cfg['weight_decay'], eps=cfg['eps'])
 
     # Learning rate scheduler
     # 🔥 优化版 ReduceLROnPlateau (更保守的参数)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='min',
-        factor=config.get('lr_decay_factor', 0.5),      # 衰减因子 (默认 0.5)
-        patience=config.get('lr_patience', 10),          # 耐心值 (默认 10,原来是 5)
-        min_lr=config.get('min_lr', 1e-6)               # 最小学习率
+        factor=cfg.get('lr_decay_factor', 0.5),      # 衰减因子 (默认 0.5)
+        patience=cfg.get('lr_patience', 10),          # 耐心值 (默认 10,原来是 5)
+        min_lr=cfg.get('min_lr', 1e-6)               # 最小学习率
     )
     
     print(f"\n{'='*60}")
     print(f"📊 Learning Rate Scheduler: ReduceLROnPlateau")
-    print(f"  - Initial LR: {config['lr']}")
-    print(f"  - Patience: {config.get('lr_patience', 10)} epochs")
-    print(f"  - Decay Factor: {config.get('lr_decay_factor', 0.5)}")
-    print(f"  - Min LR: {config.get('min_lr', 1e-6)}")
+    print(f"  - Initial LR: {cfg['lr']}")
+    print(f"  - Patience: {cfg.get('lr_patience', 10)} epochs")
+    print(f"  - Decay Factor: {cfg.get('lr_decay_factor', 0.5)}")
+    print(f"  - Min LR: {cfg.get('min_lr', 1e-6)}")
     print(f"{'='*60}\n")
     
     best_val_loss = float('inf')
     
-    for epoch in range(config['epochs']):
-        print(f'============ Epoch {epoch}/{config["epochs"]} ============')
+    for epoch in range(cfg['epochs']):
+        print(f'============ Epoch {epoch}/{cfg["epochs"]} ============')
         model.train()
-        
         epoch_loss = 0.0
         num_batches = 0
-
-        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', ncols=100, disable=True if args.tqdm_mode == 'disabled' else False)):
-
-            history_data = data["inputs"]
-            future_data = data["targets"]
-            history_data = train_scaler.transform(history_data)
-            future_data = train_scaler.transform(future_data)
-
-            labels = future_data.to(args.device)
+        for idx, data in enumerate(tqdm(train_data_loader, desc=f'Epoch {epoch}', ncols=100)):
+            history_data = data["inputs"].unsqueeze(-1)
+            future_data = data["targets"].unsqueeze(-1)
+            history_data = scaler.transform(history_data)
+            future_data = future_data.to(args.device)
             history_data = history_data.to(args.device)
             preds = model(history_data, adj_mx)
-            prediction_rescaled = train_scaler.inverse_transform(preds)
-            real_value_rescaled = train_scaler.inverse_transform(labels)
-            
-            # Calculate main loss
-            loss = metric_forward(masked_mae, [prediction_rescaled, real_value_rescaled])
-            
-            total_loss = loss
-
+            preds = scaler.inverse_transform(preds)
+            loss = metric_forward(masked_mae, [preds, future_data])
             # Backward pass
             optimizer.zero_grad()
-            total_loss.backward()
+            loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
             optimizer.step()
             
@@ -437,7 +347,7 @@ def train(config, args):
         
         # Validation
         print('============ Validation ============')
-        val_loss = validate(val_data_loader, model, adj_mx, config, val_scaler, epoch, args)
+        val_loss = validate(val_data_loader, model, adj_mx, cfg, scaler, epoch, args)
         
         # Learning rate scheduling
         # ReduceLROnPlateau 根据验证损失自适应调整
@@ -451,8 +361,8 @@ def train(config, args):
         # Save best model
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            if config.get("save_model", False):
-                model_save_path = config.get("model_save_path", "checkpoints/")
+            if cfg.get("save_model", False):
+                model_save_path = cfg.get("model_save_path", "checkpoints/")
                 os.makedirs(model_save_path, exist_ok=True)
                 best_model_path = os.path.join(model_save_path, "best_model.pt")
                 torch.save(model.state_dict(), best_model_path)
@@ -460,63 +370,63 @@ def train(config, args):
         
         # Test
         print('============ Test ============')
-        test(test_data_loader, model, adj_mx, config, test_scaler, epoch, args)
+        test(test_data_loader, model, adj_mx, cfg, scaler, epoch, args)
     
     print(f"\n🎉 Training completed! Best validation loss: {best_val_loss:.6f}")
 
 
-def main(config, args):
+def main(cfg, args):
     # Set experiment name based on model architecture
-    model_name = config.get('model_name', 'AGPST')
-    dataset_name = config['dataset_name']
+    model_name = cfg.get('model_name', 'AGPST')
+    dataset_name = cfg['dataset_name']
     
-    fusion_type = config.get('fusion_type', 'gated')
-    experiment_name = f"{dataset_name}_AlternatingST_{fusion_type}_lr{config['lr']}_bs{config['batch_size']}"
+    fusion_type = cfg.get('fusion_type', 'gated')
+    experiment_name = f"{dataset_name}_AlternatingST_{fusion_type}_lr{cfg['lr']}_bs{cfg['batch_size']}"
     if SWANLAB_AVAILABLE:
-        # Build comprehensive config for SwanLab
-        swanlab_config = {
+        # Build comprehensive cfg for SwanLab
+        swanlab_cfg = {
             # Basic info
             "model_name": model_name,
             "dataset": dataset_name,
             "mode": "train",
             
-            # Dataset config
-            "num_nodes": config['num_nodes'],
-            "input_len": config['input_len'],
-            "output_len": config['output_len'],
+            # Dataset cfg
+            "num_nodes": cfg['num_nodes'],
+            "input_len": cfg['input_len'],
+            "output_len": cfg['output_len'],
             
-            # Training config
-            "epochs": config.get('epochs', 100),
-            "batch_size": config['batch_size'],
-            "learning_rate": config['lr'],
-            "weight_decay": config.get('weight_decay', 1.0e-5),
+            # Training cfg
+            "epochs": cfg.get('epochs', 100),
+            "batch_size": cfg['batch_size'],
+            "learning_rate": cfg['lr'],
+            "weight_decay": cfg.get('weight_decay', 1.0e-5),
             
             # Model architecture
-            "embed_dim": config.get('embed_dim', 96),
-            "num_heads": config.get('num_heads', 4),
-            "dropout": config.get('dropout', 0.05),
+            "embed_dim": cfg.get('embed_dim', 96),
+            "num_heads": cfg.get('num_heads', 4),
+            "dropout": cfg.get('dropout', 0.05),
             
             # Optimization
-            "use_denoising": config.get('use_denoising', True),
+            "use_denoising": cfg.get('use_denoising', True),
         }
         
-        # Add architecture-specific config
-        swanlab_config.update({
-            "temporal_depth_1": config.get('temporal_depth_1', 2),
-            "spatial_depth_1": config.get('spatial_depth_1', 2),
-            "temporal_depth_2": config.get('temporal_depth_2', 2),
-            "spatial_depth_2": config.get('spatial_depth_2', 2),
-            "fusion_type": config.get('fusion_type', 'gated'),
+        # Add architecture-specific cfg
+        swanlab_cfg.update({
+            "temporal_depth_1": cfg.get('temporal_depth_1', 2),
+            "spatial_depth_1": cfg.get('spatial_depth_1', 2),
+            "temporal_depth_2": cfg.get('temporal_depth_2', 2),
+            "spatial_depth_2": cfg.get('spatial_depth_2', 2),
+            "fusion_type": cfg.get('fusion_type', 'gated'),
         })
     
         swanlab.init(
             project="AGPST-forecasting",
             experiment_name=experiment_name,
-            config=swanlab_config,
+            cfg=swanlab_cfg,
             mode=args.swanlab_mode,
         )
     
-    train(config, args)
+    train(cfg, args)
 
     if SWANLAB_AVAILABLE:
         swanlab.finish()
@@ -534,14 +444,13 @@ def seed_torch(seed=0):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description='PyTorch Training')
-    parser.add_argument('--config', default='./parameters/METR-LA_alternating.yaml', type=str, help='Path to the YAML config file')
+    parser.add_argument('--cfg', default='./parameters/METR-LA_alternating.yaml', type=str, help='Path to the YAML cfg file')
     parser.add_argument('--device', default='cpu', type=str, help='device')
     parser.add_argument('--swanlab_mode', default='disabled', type=str, help='swanlab mode: online or disabled')
-    parser.add_argument('--tqdm_mode', default='disabled', type=str, help='tqdm mode: enabled or disabled')
 
     args = parser.parse_args()
     
-    with open(args.config, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    with open(args.cfg, 'r', encoding='utf-8') as f:
+        cfg = yaml.safe_load(f)
     seed_torch(seed=0)
-    main(config, args)
+    main(cfg, args)

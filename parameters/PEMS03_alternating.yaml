@@ -22,8 +22,8 @@ input_len: 12
 output_len: 12
 num_nodes: 358
 use_timestamps: False
-norm_each_channel: True
-rescale: False
+norm_each_channel: False
+rescale: True
 memmap: False
 local: True
 
