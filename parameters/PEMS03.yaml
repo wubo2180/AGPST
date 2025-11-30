@@ -1,12 +1,12 @@
 # ============================================================================
-# AGPST Direct Forecasting Configuration
+# AGPST Alternating Spatio-Temporal Architecture Configuration
 # Dataset: PEMS03
-# Model: Simplified AGPST (No Patch Embedding)
+# Model: AlternatingSTModel (Revolutionary Architecture!)
 # ============================================================================
 
 # --------------------- Basic Information ---------------------
-description: 'Direct Forecasting with Adaptive Graph Learning'
-model_name: 'AGPST'
+description: 'Alternating Spatio-Temporal Encoding-Decoding Architecture'
+model_name: 'AlternatingSTModel'
 dataset_name: "PEMS03"
 dataset_type: "Traffic speed"
 mode: train
@@ -22,16 +22,25 @@ input_len: 12
 output_len: 12
 num_nodes: 358
 use_timestamps: False
-norm_each_channel: True
-rescale: False
+norm_each_channel: False
+rescale: True
 memmap: False
 local: True
 
 # --------------------- Training Configuration ---------------------
 epochs: 100
-batch_size: 32      # ⭐ 增大批次以稳定梯度
-lr: 0.001          # ⭐ 降低学习率 (Encoder-Decoder 需要更小lr)
+batch_size: 32           
+lr: 0.001 
+weight_decay: 0.0003
+eps: 0.001
 evaluation_horizons: 12
+
+# Learning rate scheduler
+scheduler:
+    type: 'ReduceLROnPlateau'
+    patience: 10
+    factor: 0.5
+    min_lr: 0.00001
 
 # Gradient clipping
 train:
@@ -45,42 +54,69 @@ in_channel: 1
 froward_features: [0]
 target_features: [0]
 
-# Denoising module
-use_denoising: True   # ⭐ 启用去噪模块
-denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
+# ============ Alternating Architecture Parameters ============
 
-# Adaptive graph learning
-use_advanced_graph: True  # Use advanced multi-scale graph learning
-graph_heads: 4  # Number of graph attention heads (only for advanced graph)
-dim: 10  # Node embedding dimension
-topK: 10  # Top-K sparsification
+# Embedding
+embed_dim: 64           # Feature dimension
 
-# Time embedding
-embed_dim: 96
-dropout: 0.1  # ⭐ 降低 dropout，允许模型学习更多
+# Stage 1: Primary feature extraction
+temporal_depth_1: 2     # Number of layers in first temporal encoder
+spatial_depth_1: 2      # Number of layers in first spatial encoder
 
-# Transformer encoder
-encoder_depth: 4
-num_heads: 4
-mlp_ratio: 4
+# Stage 2: Deep feature refinement
+temporal_depth_2: 2     # Number of layers in second temporal encoder
+spatial_depth_2: 2      # Number of layers in second spatial encoder
 
-# Transformer decoder (Encoder-Decoder架构)
-decoder_depth: 1  # ⭐ 减少到1层，降低过拟合风险
+# Attention
+num_heads: 4            # Number of attention heads
 
-# Prediction head
-pred_len: 12  # 预测长度
+# Fusion
+fusion_type: 'cross_attn'    # Fusion method: 'gated', 'concat', 'cross_attn'
+                        # Recommended: gated (good performance + stability)
 
-# --------------------- Evaluation Metrics ---------------------
+# Regularization
+dropout: 0.05           # Dropout rate
+
+# --------------------- Denoise Settings ---------------------
+use_denoising: True  # Enable denoising for input data
+denoise_type: 'conv'  # Options: 'conv', 'attention'
+                       # 'conv': 1D convolutional denoiser (fast)
+                       # 'attention': Attention-based denoiser (slower but effective)
+                       # 'conv' is recommended for speed and effectiveness.
+                       # 'attention' can be used for more complex scenarios.
+
+# ============ Mixed Precision Training (Speed Optimization) ============
+use_amp: False           # Automatic Mixed Precision training (30-50% speedup)
+
+# ============ DataLoader Optimization (Speed Optimization) ============
+dataloader:
+    num_workers: 4          # Multi-process data loading
+    pin_memory: True        # Pinned memory for GPU acceleration
+    prefetch_factor: 2      # Data prefetching
+
+# ============ Validation ============
+val_interval: 1         # Validate every epoch
+save_best_only: True    # Save only the best model
+
+# ============ Output ============
+checkpoints_dir: 'checkpoints/PEMS03_AlternatingST/'
+log_dir: 'logs/PEMS03_AlternatingST/'
+
+# ============ Loss Function ============
+loss:
+    type: 'masked_mae'  # Masked MAE
+    null_val: 0.0
+
+# ============ Optimizer ============
+optimizer:
+    type: 'Adam'
+    lr: 0.0003
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+# ============ Metrics ============
 metrics:
-    MAE: "masked_mae"
-    RMSE: "masked_rmse"
-    MAPE: "masked_mape"
-
-# --------------------- Model Saving ---------------------
-save_model: True
-model_save_path: 'checkpoints/PEMS03/'
-
-# --------------------- Logging Configuration ---------------------
-test_mode: False
-swanlab_mode: 'online'
-
+    - 'MAE'
+    - 'RMSE'
+    - 'MAPE'

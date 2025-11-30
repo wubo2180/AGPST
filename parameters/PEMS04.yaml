@@ -1,12 +1,12 @@
 # ============================================================================
-# AGPST Direct Forecasting Configuration
-# Dataset: PEMS03
-# Model: Simplified AGPST (No Patch Embedding)
+# AGPST Alternating Spatio-Temporal Architecture Configuration
+# Dataset: PEMS04
+# Model: AlternatingSTModel (Revolutionary Architecture!)
 # ============================================================================
 
 # --------------------- Basic Information ---------------------
-description: 'Direct Forecasting with Adaptive Graph Learning'
-model_name: 'AGPST'
+description: 'Alternating Spatio-Temporal Encoding-Decoding Architecture'
+model_name: 'AlternatingSTModel'
 dataset_name: "PEMS04"
 dataset_type: "Traffic speed"
 mode: train
@@ -22,16 +22,25 @@ input_len: 12
 output_len: 12
 num_nodes: 307
 use_timestamps: False
-norm_each_channel: True
+norm_each_channel: False
 rescale: False
 memmap: False
 local: True
 
 # --------------------- Training Configuration ---------------------
 epochs: 100
-batch_size: 32
-lr: 0.001
+batch_size: 32           
+lr: 0.001              
+weight_decay: 0.0001
+eps: 0.001
 evaluation_horizons: 12
+
+# Learning rate scheduler
+scheduler:
+    type: 'ReduceLROnPlateau'
+    patience: 10
+    factor: 0.5
+    min_lr: 0.00001
 
 # Gradient clipping
 train:
@@ -45,54 +54,69 @@ in_channel: 1
 froward_features: [0]
 target_features: [0]
 
-# Denoising module
-use_denoising: True  # Enable/disable denoising
-denoise_type: 'conv'  # Options: 'conv' (lightweight) or 'attention' (powerful)
+# ============ Alternating Architecture Parameters ============
 
-# Adaptive graph learning
-use_advanced_graph: True  # Use advanced multi-scale graph learning
-graph_heads: 4  # Number of graph attention heads (only for advanced graph)
-dim: 10  # Node embedding dimension
-topK: 10  # Top-K sparsification
+# Embedding
+embed_dim: 64           # Feature dimension
 
-# Time embedding
-embed_dim: 96
-dropout: 0.1
+# Stage 1: Primary feature extraction
+temporal_depth_1: 2     # Number of layers in first temporal encoder
+spatial_depth_1: 2      # Number of layers in first spatial encoder
 
-# Transformer encoder
-encoder_depth: 4
-num_heads: 4
-mlp_ratio: 4
+# Stage 2: Deep feature refinement
+temporal_depth_2: 2     # Number of layers in second temporal encoder
+spatial_depth_2: 2      # Number of layers in second spatial encoder
 
-# GraphWaveNet backend
-backend_args:
-    num_nodes: 307
-    supports: ''
-    dropout: 0.3
-    gcn_bool: True
-    addaptadj: True
-    aptinit: null
-    in_dim: 1
-    out_dim: 12
-    residual_channels: 32
-    dilation_channels: 32
-    skip_channels: 256
-    end_channels: 512
-    kernel_size: 2
-    blocks: 4
-    layers: 2
+# Attention
+num_heads: 4            # Number of attention heads
 
-# --------------------- Evaluation Metrics ---------------------
+# Fusion
+fusion_type: 'cross_attn'    # Fusion method: 'gated', 'concat', 'cross_attn'
+                        # Recommended: gated (good performance + stability)
+
+# Regularization
+dropout: 0.05           # Dropout rate
+
+# --------------------- Denoise Settings ---------------------
+use_denoising: True  # Enable denoising for input data
+denoise_type: 'conv'  # Options: 'conv', 'attention'
+                       # 'conv': 1D convolutional denoiser (fast)
+                       # 'attention': Attention-based denoiser (slower but effective)
+                       # 'conv' is recommended for speed and effectiveness.
+                       # 'attention' can be used for more complex scenarios.
+
+# ============ Mixed Precision Training (Speed Optimization) ============
+use_amp: False           # Automatic Mixed Precision training (30-50% speedup)
+
+# ============ DataLoader Optimization (Speed Optimization) ============
+dataloader:
+    num_workers: 4          # Multi-process data loading
+    pin_memory: True        # Pinned memory for GPU acceleration
+    prefetch_factor: 2      # Data prefetching
+
+# ============ Validation ============
+val_interval: 1         # Validate every epoch
+save_best_only: True    # Save only the best model
+
+# ============ Output ============
+checkpoints_dir: 'checkpoints/PEMS04_AlternatingST/'
+log_dir: 'logs/PEMS04_AlternatingST/'
+
+# ============ Loss Function ============
+loss:
+    type: 'masked_mae'  # Masked MAE
+    null_val: 0.0
+
+# ============ Optimizer ============
+optimizer:
+    type: 'Adam'
+    lr: 0.0003
+    weight_decay: 0.0001
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+# ============ Metrics ============
 metrics:
-    MAE: "masked_mae"
-    RMSE: "masked_rmse"
-    MAPE: "masked_mape"
-
-# --------------------- Model Saving ---------------------
-save_model: True
-model_save_path: 'checkpoints/PEMS04/'
-
-# --------------------- Logging Configuration ---------------------
-test_mode: False
-swanlab_mode: 'online'
-
+    - 'MAE'
+    - 'RMSE'
+    - 'MAPE'
